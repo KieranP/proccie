@@ -1,0 +1,57 @@
+# Example Procfile.toml for proccie
+#
+# Global keys (outside any process section):
+#   env_file    - (optional) path to a dotenv-style file whose variables
+#                 are applied to all processes
+#
+# Per-process keys:
+#   command    - (required) shell command to run
+#   exit_codes - (optional) array of integers of expected exit codes.
+#                If the process exits with one of these codes, it won't trigger
+#                a shutdown. Omit for long-running services that should never exit.
+#   readiness  - (optional) readiness check. Either a bare string:
+#                  readiness = "pg_isready -q"
+#                or a table with interval/timeout in seconds:
+#                  readiness.command  = "curl -sf http://localhost:3000/health"
+#                  readiness.interval = 2
+#                  readiness.timeout  = 60
+#                Mutually exclusive with exit_codes.
+#   depends_on  - (optional) list of process names that must be ready first
+#   env_file    - (optional) path to a dotenv-style file for this process only
+#   environment - (optional) inline table of extra environment variables
+#   log_file    - (optional) file path to write a copy of this process's
+#                 output to (plain text, no colors), in addition to the console
+#   max_retries - (optional) integer, max number of times to restart on
+#                 failure before proccie shuts down. Default 0 (no retries).
+
+# Global env file -- loaded for all processes
+env_file = ".env"
+
+[db]
+command   = "postgres -D /usr/local/var/postgres"
+readiness = "pg_isready -q"
+
+[migrations]
+command    = "rake db:migrate"
+exit_codes = [0]
+depends_on = ["db"]
+
+[backend]
+command            = "bin/rails server -p 3000"
+depends_on         = ["migrations"]
+readiness.command  = "curl -sf http://localhost:3000/health"
+readiness.timeout  = 60
+readiness.interval = 2
+environment        = { RAILS_ENV = "development", PORT = "3000" }
+log_file           = "tmp/backend.log"
+
+[frontend]
+command     = "npm run dev"
+depends_on  = ["backend"]
+env_file    = ".env.frontend"
+environment = { PORT = "5173", NODE_ENV = "development" }
+
+[worker]
+command     = "bundle exec sidekiq"
+depends_on  = ["db"]
+max_retries = 3
