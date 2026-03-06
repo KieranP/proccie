@@ -1,14 +1,13 @@
 // Package log provides colored, multiplexed log output for child
 // processes. It prefixes each line with a color-coded process name and
 // supports optional per-process plain-text log file output.
-package log //nolint:revive // intentional; project does not use stdlib log
+package log
 
 import (
 	"bytes"
 	"fmt"
 	"io"
 	"strings"
-	"sync"
 )
 
 // ansiColors returns ANSI color codes for process prefixes.
@@ -25,25 +24,6 @@ func ansiColors() []string {
 		"\033[95m", // bright magenta
 		"\033[92m", // bright green
 	}
-}
-
-const (
-	// MaxLineBuffer is the maximum bytes buffered per writer before forcing
-	// a flush. This prevents runaway memory use from processes that write
-	// large amounts of data without newlines.
-	MaxLineBuffer = 1024 * 1024 // 1 MiB
-
-	reset = "\033[0m"
-	dim   = "\033[2m"
-)
-
-// Mux is a log multiplexer that prefixes each line with a colored process name.
-type Mux struct {
-	mu       sync.Mutex
-	out      io.Writer
-	padWidth int
-	colorIdx int
-	debug    bool
 }
 
 // NewMux creates a new Mux that writes to the given output.
@@ -88,14 +68,6 @@ func (m *Mux) SystemLog(format string, args ...any) {
 	for line := range strings.SplitSeq(strings.TrimRight(msg, "\n"), "\n") {
 		_, _ = fmt.Fprintf(m.out, "%s%s%s\n", prefix, line, reset)
 	}
-}
-
-type prefixWriter struct {
-	mux         *Mux
-	prefix      string
-	plainPrefix string    // prefix without ANSI codes, used for log file output
-	logFile     io.Writer // optional per-process log file
-	buf         []byte
 }
 
 func (pw *prefixWriter) Write(p []byte) (int, error) {
