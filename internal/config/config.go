@@ -1,16 +1,17 @@
+// Package config handles TOML configuration parsing, validation, and
+// cycle detection for proccie process definitions. It provides types for
+// process entries, exit codes, and readiness checks.
 package config
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"sort"
-	"strings"
 	"time"
 
-	"github.com/BurntSushi/toml"
+	"github.com/joho/godotenv"
 )
 
 const (
@@ -85,51 +86,6 @@ func (r Readiness) TimeoutOrDefault() time.Duration {
 	return DefaultReadinessTimeout
 }
 
-// UnmarshalTOML implements toml.Unmarshaler so that readiness accepts
-// both a bare string and a table with command/interval/timeout keys.
-func (r *Readiness) UnmarshalTOML(v any) error {
-	switch val := v.(type) {
-	case string:
-		r.Command = val
-
-		return nil
-	case map[string]any:
-		cmd, ok := val["command"]
-		if !ok {
-			return errors.New("readiness: table form requires \"command\" key")
-		}
-
-		cmdStr, ok := cmd.(string)
-		if !ok {
-			return fmt.Errorf("readiness.command: expected string, got %T", cmd)
-		}
-
-		r.Command = cmdStr
-
-		if iv, ok := val["interval"]; ok {
-			n, ok := iv.(int64)
-			if !ok {
-				return fmt.Errorf("readiness.interval: expected integer (seconds), got %T", iv)
-			}
-
-			r.Interval = time.Duration(n) * time.Second
-		}
-
-		if tv, ok := val["timeout"]; ok {
-			n, ok := tv.(int64)
-			if !ok {
-				return fmt.Errorf("readiness.timeout: expected integer (seconds), got %T", tv)
-			}
-
-			r.Timeout = time.Duration(n) * time.Second
-		}
-
-		return nil
-	default:
-		return fmt.Errorf("readiness: expected string or table, got %T", v)
-	}
-}
-
 // Process defines a single process entry from the TOML config.
 type Process struct {
 	// Command is the shell command to run (required).
@@ -197,126 +153,104 @@ type Process struct {
 	//
 	//   max_retries = 3
 	MaxRetries int `toml:"max_retries"`
+
+	// ComputedEnv is the fully computed environment for this process as a
+	// slice of "KEY=VALUE" strings ready to assign to exec.Cmd.Env. It
+	// is populated by Load and includes (in override order): the OS
+	// environment, global env_file vars, global environment table vars,
+	// per-process env_file vars, and per-process inline environment
+	// table entries.
+	ComputedEnv []string `toml:"-"`
 }
 
-// Config is the top-level configuration. It holds the global env_file
-// path (optional) and the mapping of process name -> process definition.
+// Config is the top-level configuration. It holds the mapping of
+// process name -> process definition. Each Process has its Env slice
+// fully computed at load time.
 type Config struct {
-	// EnvFile is the top-level env_file path. When set, the variables in
-	// the file are loaded and applied to all processes. Per-process
-	// env_file and environment table entries override these.
-	EnvFile string
-
-	// GlobalEnv holds the parsed key-value pairs from the top-level
-	// env_file. This is populated by Load and used by the runner.
-	GlobalEnv map[string]string
-
 	Processes map[string]Process
 }
 
 // Load reads and parses a TOML config file into a Config struct.
 //
-// The TOML file may contain a top-level env_file = "path" key alongside
-// the process table sections. Any other top-level scalar keys are
-// rejected as unknown.
+// The TOML file may contain top-level env_file = "path" and/or
+// environment = { KEY = "VALUE" } keys alongside the process table
+// sections. Any other top-level scalar keys are rejected as unknown.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return nil, fmt.Errorf("reading config %s: %w", path, err)
 	}
 
-	// Phase 1: decode into a generic map to separate top-level scalars
-	// from process table sections.
-	var raw map[string]any
-
-	err = toml.Unmarshal(data, &raw)
+	result, err := parse(data, path)
 	if err != nil {
-		return nil, fmt.Errorf("parsing config %s: %w", path, err)
+		return nil, err
 	}
 
-	var globalEnvFile string
-
-	// Extract known top-level scalar keys.
-	if v, ok := raw["env_file"]; ok {
-		s, ok := v.(string)
-		if !ok {
-			return nil, fmt.Errorf("parsing config %s: top-level env_file must be a string", path)
-		}
-
-		globalEnvFile = s
-
-		delete(raw, "env_file")
-	}
-
-	// Reject any remaining non-table top-level keys.
-	for k, v := range raw {
-		if _, isMap := v.(map[string]any); !isMap {
-			return nil, fmt.Errorf(
-				"parsing config %s: unknown top-level key %q (expected a process table)",
-				path, k,
-			)
-		}
-	}
-
-	// Phase 2: re-encode the remaining map (process tables only) and
-	// decode into the typed map[string]Process.
-	procBytes, err := tomlMarshal(raw)
-	if err != nil {
-		return nil, fmt.Errorf("parsing config %s: %w", path, err)
-	}
-
-	procs := make(map[string]Process)
-
-	err = toml.Unmarshal(procBytes, &procs)
-	if err != nil {
-		return nil, fmt.Errorf("parsing config %s: %w", path, err)
-	}
+	procs := result.procs
 
 	// Load global env file if specified.
 	var globalEnv map[string]string
-	if globalEnvFile != "" {
-		globalEnv, err = ParseEnvFile(globalEnvFile)
+	if result.globalEnvFile != "" {
+		globalEnv, err = godotenv.Read(result.globalEnvFile)
 		if err != nil {
 			return nil, fmt.Errorf("config: top-level env_file: %w", err)
 		}
 	}
 
-	// Load per-process env files.
+	err = validate(procs)
+	if err != nil {
+		return nil, fmt.Errorf("loading %s: %w", path, err)
+	}
+
+	// Build the fully-resolved environment for each process.
+	// Merge order: OS environ -> global env_file -> global environment
+	// table -> per-process env_file -> per-process inline environment
+	// table. Because exec.Cmd.Env is a flat slice where the last entry
+	// for a duplicate key wins, we simply append in order without
+	// deduplication.
+	osEnv := os.Environ()
+
 	for name := range procs {
-		if procs[name].EnvFile != "" {
-			_, err := ParseEnvFile(procs[name].EnvFile)
+		proc := procs[name]
+
+		// Parse per-process env file if configured.
+		var procFileEnv map[string]string
+
+		if proc.EnvFile != "" {
+			procFileEnv, err = godotenv.Read(proc.EnvFile)
 			if err != nil {
 				return nil, fmt.Errorf("config: process %q env_file: %w", name, err)
 			}
 		}
-	}
 
-	err = validate(procs)
-	if err != nil {
-		return nil, err
+		capacity := len(osEnv) + len(globalEnv) + len(result.globalEnv) +
+			len(procFileEnv) + len(proc.Environment)
+		env := make([]string, 0, capacity)
+		env = append(env, osEnv...)
+
+		for k, v := range globalEnv {
+			env = append(env, fmt.Sprintf("%s=%s", k, v))
+		}
+
+		for k, v := range result.globalEnv {
+			env = append(env, fmt.Sprintf("%s=%s", k, v))
+		}
+
+		for k, v := range procFileEnv {
+			env = append(env, fmt.Sprintf("%s=%s", k, v))
+		}
+
+		for k, v := range proc.Environment {
+			env = append(env, fmt.Sprintf("%s=%s", k, v))
+		}
+
+		proc.ComputedEnv = env
+		procs[name] = proc
 	}
 
 	return &Config{
-		EnvFile:   globalEnvFile,
-		GlobalEnv: globalEnv,
 		Processes: procs,
 	}, nil
-}
-
-// tomlMarshal re-encodes a map[string]any back to TOML bytes. This is
-// used internally so we can strip top-level scalars before decoding
-// process tables.
-func tomlMarshal(m map[string]any) ([]byte, error) {
-	var buf strings.Builder
-
-	enc := toml.NewEncoder(&buf)
-
-	err := enc.Encode(m)
-	if err != nil {
-		return nil, err
-	}
-
-	return []byte(buf.String()), nil
 }
 
 // StartOrder returns process names in a deterministic topological order

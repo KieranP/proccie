@@ -13,7 +13,6 @@ linters:
     - forbidigo
     - funlen
     - goprintffuncname
-    - paralleltest
     - varnamelen
     - wrapcheck
     - wsl
@@ -22,9 +21,6 @@ linters:
       enable-all: true
     revive:
       enable-default-rules: true
-      rules:
-        - name: package-comments
-          disabled: true
 
 formatters:
   enable:

@@ -1,11 +1,14 @@
+// Package runner manages the lifecycle of child processes, including
+// dependency-ordered startup, readiness polling, graceful shutdown with
+// signal escalation, and automatic retries on failure.
 package runner
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -208,7 +211,11 @@ func (r *Runner) runProcess(ctx context.Context, name string) {
 	if proc.LogFile != "" {
 		var err error
 
-		logFile, err = os.OpenFile(proc.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, logFilePerms)
+		logFile, err = os.OpenFile(
+			filepath.Clean(proc.LogFile),
+			os.O_CREATE|os.O_WRONLY|os.O_APPEND,
+			logFilePerms,
+		)
 		if err != nil {
 			r.mux.SystemLog("failed to open log file for %s: %v", name, err)
 			r.signalDepResult(name, depFailed)
@@ -287,7 +294,7 @@ func (r *Runner) runOnce(
 	cmd := exec.Command("sh", "-c", proc.Command)
 	cmd.Stdout = writer
 	cmd.Stderr = writer
-	cmd.Env = r.buildEnv(r.cfg.GlobalEnv, proc.EnvFile, proc.Environment)
+	cmd.Env = proc.ComputedEnv
 
 	// Use a process group so we can signal the whole tree.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -507,47 +514,6 @@ func (r *Runner) recoverPanic(name string) {
 		r.signalDepResult(name, depFailed)
 		r.Shutdown()
 	}
-}
-
-// buildEnv constructs the environment for a child process. The merge
-// order is: OS environ -> global env_file -> per-process env_file ->
-// per-process environment table. Later sources override earlier ones.
-//
-// Because exec sets env as a flat slice where the last entry for a key
-// wins, we can simply append in order without deduplication.
-func (r *Runner) buildEnv(
-	globalEnv map[string]string,
-	procEnvFile string,
-	extra map[string]string,
-) []string {
-	env := os.Environ()
-
-	// Global env_file vars.
-	for k, v := range globalEnv {
-		env = append(env, fmt.Sprintf("%s=%s", k, v))
-	}
-
-	// Per-process env_file vars.
-	if procEnvFile != "" {
-		// The file was already validated at config load time, so errors
-		// here are unexpected. Log a warning rather than crashing a
-		// running process.
-		fileEnv, err := config.ParseEnvFile(procEnvFile)
-		if err != nil {
-			r.mux.SystemLog("warning: failed to read env_file %s: %v", procEnvFile, err)
-		} else {
-			for k, v := range fileEnv {
-				env = append(env, fmt.Sprintf("%s=%s", k, v))
-			}
-		}
-	}
-
-	// Per-process inline environment table (highest priority).
-	for k, v := range extra {
-		env = append(env, fmt.Sprintf("%s=%s", k, v))
-	}
-
-	return env
 }
 
 // exitCodeFromCmd safely extracts the exit code from a finished command,

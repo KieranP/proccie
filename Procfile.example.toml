@@ -3,6 +3,9 @@
 # Global keys (outside any process section):
 #   env_file    - (optional) path to a dotenv-style file whose variables
 #                 are applied to all processes
+#   environment - (optional) inline table of environment variables applied
+#                 to all processes. Overrides global env_file but is
+#                 overridden by per-process env_file and environment.
 #
 # Per-process keys:
 #   command    - (required) shell command to run
@@ -26,6 +29,9 @@
 
 # Global env file -- loaded for all processes
 env_file = ".env"
+
+# Global inline env vars -- applied to all processes, overrides env_file
+environment = { COMPOSE_PROJECT = "myapp", LOG_LEVEL = "info" }
 
 [db]
 command   = "postgres -D /usr/local/var/postgres"

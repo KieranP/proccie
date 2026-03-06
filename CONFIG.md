@@ -6,9 +6,10 @@ Each section in the TOML file defines a process. The section name (e.g. `[web]`)
 
 These keys are set at the top level of the TOML file (outside any process section).
 
-| Key        | Type   | Default  | Description                                                                                                                                              |
-| ---------- | ------ | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `env_file` | string | _(none)_ | Path to a dotenv-style file. Variables from this file are applied to **all** processes. Per-process `env_file` and `environment` entries override these. |
+| Key           | Type   | Default  | Description                                                                                                                                                                                    |
+| ------------- | ------ | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `env_file`    | string | _(none)_ | Path to a dotenv-style file. Variables from this file are applied to **all** processes. Overridden by global `environment`, per-process `env_file`, and per-process `environment` entries.     |
+| `environment` | table  | `{}`     | Extra environment variables applied to **all** processes. Overrides the global `env_file` but is overridden by per-process `env_file` and per-process `environment` entries.                   |
 
 ## Process keys
 
@@ -123,14 +124,15 @@ environment = { RAILS_ENV = "development", PORT = "3000" }
 
 ## Environment files
 
-The `env_file` key (both global and per-process) points to a dotenv-style file. Supported syntax:
+The `env_file` key (both global and per-process) points to a dotenv-style file. Parsing is handled by [godotenv](https://github.com/joho/godotenv). Supported syntax:
 
 - `KEY=VALUE` (basic assignment)
 - `export KEY=VALUE` (shell-compatible; `export` prefix is stripped)
 - Lines starting with `#` are comments
 - Blank lines are skipped
-- Leading/trailing whitespace on keys and values is trimmed
-- Quoted values (single or double) have their quotes stripped
+- Quoted values (single, double, or backtick)
+- Multiline values with double quotes
+- Variable interpolation (e.g. `HOST=${HOSTNAME}`)
 
 Example `.env` file:
 
@@ -147,16 +149,20 @@ Environment variables are merged in this order (later sources override earlier o
 
 1. **OS environment** -- inherited from the shell that launched proccie
 2. **Global `env_file`** -- top-level `env_file` in the TOML config
-3. **Per-process `env_file`** -- `env_file` inside a process section
-4. **Per-process `environment`** -- inline table inside a process section
+3. **Global `environment`** -- top-level `environment` table in the TOML config
+4. **Per-process `env_file`** -- `env_file` inside a process section
+5. **Per-process `environment`** -- inline table inside a process section
 
 ```toml
 # Global env file applied to all processes
 env_file = ".env"
 
+# Global inline env vars applied to all processes (overrides env_file)
+environment = { NODE_ENV = "development" }
+
 [web]
 command     = "bin/rails server"
-env_file    = ".env.web"                                    # overrides global .env
+env_file    = ".env.web"                                    # overrides global env_file and environment
 environment = { RAILS_ENV = "development", PORT = "3000" }  # highest priority
 ```
 
@@ -201,6 +207,7 @@ proccie [options] [command]
 | ---------- | --------------- | --------------------------------------------------------------------------------------------------- |
 | `-f`       | `Procfile.toml` | Path to the TOML config file.                                                                       |
 | `-t`       | `10s`           | Shutdown timeout before SIGKILL.                                                                    |
+| `-k`       | `500ms`         | Delay after force SIGKILL before hard exit.                                                         |
 | `-only`    | _(none)_        | Comma-separated list of processes to run. Their transitive dependencies are included automatically. |
 | `-except`  | _(none)_        | Comma-separated list of processes to exclude.                                                       |
 | `-debug`   | `false`         | Show system log lines.                                                                              |

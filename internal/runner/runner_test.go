@@ -67,6 +67,8 @@ func loadTestConfig(t *testing.T, tomlContent string) *config.Config {
 }
 
 func TestExpectedExitCodeDoesNotTriggerShutdown(t *testing.T) {
+	t.Parallel()
+
 	r, buf := newTestRunner(t, `
 [main]
 command = "sleep 30"
@@ -105,6 +107,8 @@ exit_codes = [0]
 }
 
 func TestUnexpectedExitCodeTriggersShutdown(t *testing.T) {
+	t.Parallel()
+
 	r, buf := newTestRunner(t, `
 [main]
 command = "sleep 30"
@@ -126,6 +130,8 @@ command = "exit 1"
 }
 
 func TestExitCodeNotInAllowedListTriggersShutdown(t *testing.T) {
+	t.Parallel()
+
 	// exit_codes = [0] means only code 0 is expected. Exiting with 2
 	// should still trigger shutdown.
 	r, buf := newTestRunner(t, `
@@ -150,6 +156,8 @@ exit_codes = [0]
 }
 
 func TestExitCodeMatchesArrayEntry(t *testing.T) {
+	t.Parallel()
+
 	// exit_codes = [0, 2] -- exiting with 2 should be fine.
 	r, buf := newTestRunner(t, `
 [main]
@@ -188,6 +196,8 @@ exit_codes = [0, 2]
 }
 
 func TestNoExitCodesMeansAnyExitTriggersShutdown(t *testing.T) {
+	t.Parallel()
+
 	// No exit_codes specified -- even a clean exit 0 should shut down.
 	r, buf := newTestRunner(t, `
 [main]
@@ -197,8 +207,7 @@ command = "sleep 30"
 command = "true"
 `)
 
-	code := r.Run(context.Background())
-	_ = code
+	r.Run(context.Background())
 
 	output := buf.String()
 	if !strings.Contains(output, "initiating shutdown") {
@@ -210,6 +219,8 @@ command = "true"
 }
 
 func TestDependencyOrdering(t *testing.T) {
+	t.Parallel()
+
 	r, buf := newTestRunner(t, `
 [db]
 command = "echo db-started"
@@ -241,6 +252,8 @@ depends_on = ["db"]
 }
 
 func TestQuickFailDependencyStillAllowsDependent(t *testing.T) {
+	t.Parallel()
+
 	// When a dependency has exit_codes and exits with an allowed code,
 	// it signals readiness. The dependent should run.
 	r, buf := newTestRunner(t, `
@@ -263,6 +276,8 @@ depends_on = ["broken"]
 }
 
 func TestEnvPassthrough(t *testing.T) {
+	t.Parallel()
+
 	r, buf := newTestRunner(t, `
 [app]
 command = "echo MY_VAR=$MY_VAR"
@@ -279,6 +294,8 @@ environment = { MY_VAR = "hello_from_config" }
 }
 
 func TestShutdownIdempotent(t *testing.T) {
+	t.Parallel()
+
 	r, buf := newTestRunner(t, `
 [app]
 command = "sleep 30"
@@ -306,6 +323,8 @@ command = "sleep 30"
 }
 
 func TestAllExpectedExitsCleanly(t *testing.T) {
+	t.Parallel()
+
 	r, _ := newTestRunner(t, `
 [a]
 command = "echo a"
@@ -325,6 +344,8 @@ exit_codes = [0]
 // --- Dependency readiness mode tests ---
 
 func TestExitCodesDependencyWaitsForExit(t *testing.T) {
+	t.Parallel()
+
 	// "migrate" has exit_codes=0 and takes 0.5s.
 	// "web" depends on "migrate" and should only start AFTER migrate exits.
 	r, buf := newTestRunner(t, `
@@ -362,6 +383,8 @@ depends_on = ["migrate"]
 }
 
 func TestExitCodesDependencyFailBlocksDependent(t *testing.T) {
+	t.Parallel()
+
 	// "migrate" has exit_codes=0 but exits with code 2 (not allowed).
 	// "web" depends on "migrate" and should NOT start.
 	r, buf := newTestRunner(t, `
@@ -388,6 +411,8 @@ depends_on = ["migrate"]
 }
 
 func TestReadinessDependencyWaitsForCheck(t *testing.T) {
+	t.Parallel()
+
 	// "api" has a readiness check. "frontend" depends on "api" and should
 	// only start after the readiness check passes.
 	// We use a file-based readiness check: the process creates a file
@@ -431,6 +456,8 @@ depends_on = ["api"]
 }
 
 func TestReadinessTimeoutBlocksDependent(t *testing.T) {
+	t.Parallel()
+
 	// Readiness command will never succeed. Dependent should not start.
 	r, buf := newTestRunner(t, `
 [api]
@@ -469,6 +496,8 @@ depends_on = ["api"]
 }
 
 func TestBareDependencyReadyOnLaunch(t *testing.T) {
+	t.Parallel()
+
 	// "db" has no exit_codes and no readiness -- bare process.
 	// "web" depends on "db" and should start immediately after db launches.
 	r, buf := newTestRunner(t, `
@@ -504,6 +533,8 @@ depends_on = ["db"]
 }
 
 func TestGlobalEnvFilePassthrough(t *testing.T) {
+	t.Parallel()
+
 	dir := t.TempDir()
 
 	// Write env file.
@@ -531,7 +562,28 @@ exit_codes = [0]
 	}
 }
 
+func TestGlobalEnvironmentTablePassthrough(t *testing.T) {
+	t.Parallel()
+
+	r, buf := newTestRunner(t, `
+environment = { GTABLE_VAR = "from_global_table" }
+
+[app]
+command = "echo GTABLE_VAR=$GTABLE_VAR"
+exit_codes = [0]
+`)
+
+	r.Run(context.Background())
+
+	output := buf.String()
+	if !strings.Contains(output, "GTABLE_VAR=from_global_table") {
+		t.Errorf("expected global environment table var in output: %s", output)
+	}
+}
+
 func TestPerProcessEnvFilePassthrough(t *testing.T) {
+	t.Parallel()
+
 	dir := t.TempDir()
 
 	// Write per-process env file.
@@ -559,13 +611,21 @@ env_file = %q
 }
 
 func TestEnvFileMergeOrder(t *testing.T) {
-	// Verify merge order: global env_file < per-process env_file < environment table.
+	t.Parallel()
+
+	// Verify full 5-layer merge order:
+	// OS environ < global env_file < global environment table
+	// < per-process env_file < per-process environment table.
 	dir := t.TempDir()
 
-	// Global env file sets VAR=global and ONLY_GLOBAL=yes.
+	// Global env file sets VAR=global, ONLY_GLOBAL=yes, and GFILE_VS_GTABLE=from_gfile.
 	globalEnv := filepath.Join(dir, ".env")
 
-	err := os.WriteFile(globalEnv, []byte("VAR=global\nONLY_GLOBAL=yes\n"), 0o600)
+	err := os.WriteFile(
+		globalEnv,
+		[]byte("VAR=global\nONLY_GLOBAL=yes\nGFILE_VS_GTABLE=from_gfile\n"),
+		0o600,
+	)
 	if err != nil {
 		t.Fatalf("writing global env file: %v", err)
 	}
@@ -578,12 +638,15 @@ func TestEnvFileMergeOrder(t *testing.T) {
 		t.Fatalf("writing proc env file: %v", err)
 	}
 
+	// Global environment table overrides VAR=global_table, GFILE_VS_GTABLE=from_gtable,
+	// and sets ONLY_GTABLE=yes.
 	// Inline environment overrides VAR=inline.
 	tomlContent := fmt.Sprintf(`
-env_file = %q
+env_file    = %q
+environment = { VAR = "global_table", GFILE_VS_GTABLE = "from_gtable", ONLY_GTABLE = "yes" }
 
 [app]
-command     = "echo VAR=$VAR ONLY_GLOBAL=$ONLY_GLOBAL ONLY_PROC=$ONLY_PROC"
+command     = "echo VAR=$VAR GVG=$GFILE_VS_GTABLE OG=$ONLY_GLOBAL OGT=$ONLY_GTABLE OP=$ONLY_PROC"
 exit_codes  = [0]
 env_file    = %q
 environment = { VAR = "inline" }
@@ -593,23 +656,33 @@ environment = { VAR = "inline" }
 	r.Run(context.Background())
 
 	output := buf.String()
-	// VAR should be "inline" (environment table wins).
+	// VAR should be "inline" (per-process environment table wins over all).
 	if !strings.Contains(output, "VAR=inline") {
-		t.Errorf("expected VAR=inline (environment table should win): %s", output)
+		t.Errorf("expected VAR=inline (per-process env table should win): %s", output)
 	}
 	// ONLY_GLOBAL should still be present from global env file.
-	if !strings.Contains(output, "ONLY_GLOBAL=yes") {
-		t.Errorf("expected ONLY_GLOBAL=yes from global env file: %s", output)
+	if !strings.Contains(output, "OG=yes") {
+		t.Errorf("expected OG=yes from global env file: %s", output)
+	}
+	// GFILE_VS_GTABLE should be from_gtable (global env table overrides global env file).
+	if !strings.Contains(output, "GVG=from_gtable") {
+		t.Errorf("expected GVG=from_gtable (global env table overrides env file): %s", output)
+	}
+	// ONLY_GTABLE should be present from global environment table.
+	if !strings.Contains(output, "OGT=yes") {
+		t.Errorf("expected OGT=yes from global environment table: %s", output)
 	}
 	// ONLY_PROC should still be present from per-process env file.
-	if !strings.Contains(output, "ONLY_PROC=yes") {
-		t.Errorf("expected ONLY_PROC=yes from per-process env file: %s", output)
+	if !strings.Contains(output, "OP=yes") {
+		t.Errorf("expected OP=yes from per-process env file: %s", output)
 	}
 }
 
 // --- max_retries tests ---
 
 func TestMaxRetriesRestartsProcess(t *testing.T) {
+	t.Parallel()
+
 	// Process fails (exit 1) but has max_retries=2, so it should run 3 times total.
 	// Use a file counter to track how many times the process runs.
 	dir := t.TempDir()
@@ -661,6 +734,8 @@ max_retries = 2
 }
 
 func TestMaxRetriesSucceedsOnRetry(t *testing.T) {
+	t.Parallel()
+
 	// Process fails on first attempt, succeeds on second.
 	dir := t.TempDir()
 
@@ -711,6 +786,8 @@ max_retries = 3
 }
 
 func TestMaxRetriesZeroMeansNoRetry(t *testing.T) {
+	t.Parallel()
+
 	// max_retries=0 (default) means no retries -- same as before.
 	r, buf := newTestRunner(t, `
 [task]
@@ -732,6 +809,8 @@ command = "exit 1"
 // --- Filter (only/except) integration tests ---
 
 func TestFilterOnlyRunsSubset(t *testing.T) {
+	t.Parallel()
+
 	cfg := loadTestConfig(t, `
 [web]
 command = "echo web-ran"
@@ -772,6 +851,8 @@ exit_codes = [0]
 }
 
 func TestFilterExceptExcludesProcess(t *testing.T) {
+	t.Parallel()
+
 	cfg := loadTestConfig(t, `
 [web]
 command = "echo web-ran"

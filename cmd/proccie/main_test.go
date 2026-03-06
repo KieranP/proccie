@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,8 @@ import (
 )
 
 func TestSplitFlag(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		input string
 		want  []string
@@ -27,6 +30,8 @@ func TestSplitFlag(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(fmt.Sprintf("input=%q", tt.input), func(t *testing.T) {
+			t.Parallel()
+
 			got := splitFlag(tt.input)
 
 			if tt.want == nil && got != nil {
@@ -52,7 +57,7 @@ func TestSplitFlag(t *testing.T) {
 	}
 }
 
-func TestRunValidateValid(t *testing.T) {
+func TestRunValidateValid(t *testing.T) { //nolint:paralleltest // redirects os.Stdout
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "Procfile.toml")
 
@@ -84,11 +89,9 @@ command = "bundle exec sidekiq"
 	_ = w.Close()
 	os.Stdout = origStdout
 
-	var buf [4096]byte
+	out, _ := io.ReadAll(r)
 
-	n, _ := r.Read(buf[:])
-
-	output := string(buf[:n])
+	output := string(out)
 
 	if code != 0 {
 		t.Errorf("runValidate returned %d, want 0", code)
@@ -107,7 +110,7 @@ command = "bundle exec sidekiq"
 	}
 }
 
-func TestRunValidateInvalid(t *testing.T) {
+func TestRunValidateInvalid(t *testing.T) { //nolint:paralleltest // redirects os.Stderr
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "Procfile.toml")
 
@@ -137,11 +140,9 @@ exit_codes = [0]
 	_ = w.Close()
 	os.Stderr = origStderr
 
-	var buf [4096]byte
+	out, _ := io.ReadAll(r)
 
-	n, _ := r.Read(buf[:])
-
-	output := string(buf[:n])
+	output := string(out)
 
 	if code != 1 {
 		t.Errorf("runValidate returned %d, want 1", code)
@@ -153,6 +154,8 @@ exit_codes = [0]
 }
 
 func TestRunValidateMissingFile(t *testing.T) {
+	t.Parallel()
+
 	code := runValidate("/nonexistent/Procfile.toml")
 	if code != 1 {
 		t.Errorf("runValidate returned %d, want 1", code)

@@ -8,6 +8,8 @@ import (
 )
 
 func TestFilterOnly(t *testing.T) {
+	t.Parallel()
+
 	path := writeTempConfig(t, `
 [web]
 command = "npm start"
@@ -39,6 +41,8 @@ command = "cron"
 }
 
 func TestFilterOnlyIncludesDependencies(t *testing.T) {
+	t.Parallel()
+
 	path := writeTempConfig(t, `
 [db]
 command = "postgres"
@@ -79,6 +83,8 @@ command = "bundle exec sidekiq"
 }
 
 func TestFilterExcept(t *testing.T) {
+	t.Parallel()
+
 	path := writeTempConfig(t, `
 [web]
 command = "npm start"
@@ -110,6 +116,8 @@ command = "cron"
 }
 
 func TestFilterOnlyUnknownProcess(t *testing.T) {
+	t.Parallel()
+
 	path := writeTempConfig(t, `
 [web]
 command = "npm start"
@@ -131,6 +139,8 @@ command = "npm start"
 }
 
 func TestFilterExceptUnknownProcess(t *testing.T) {
+	t.Parallel()
+
 	path := writeTempConfig(t, `
 [web]
 command = "npm start"
@@ -152,6 +162,8 @@ command = "npm start"
 }
 
 func TestFilterBothOnlyAndExceptRejected(t *testing.T) {
+	t.Parallel()
+
 	path := writeTempConfig(t, `
 [web]
 command = "npm start"
@@ -176,6 +188,8 @@ command = "bundle exec sidekiq"
 }
 
 func TestFilterEmptyIsNoop(t *testing.T) {
+	t.Parallel()
+
 	path := writeTempConfig(t, `
 [web]
 command = "npm start"
@@ -196,5 +210,37 @@ command = "bundle exec sidekiq"
 
 	if len(cfg.Processes) != 2 {
 		t.Fatalf("expected 2 processes after empty filter, got %d", len(cfg.Processes))
+	}
+}
+
+func TestFilterExceptPrunesDanglingDeps(t *testing.T) {
+	t.Parallel()
+
+	path := writeTempConfig(t, `
+[db]
+command = "postgres"
+
+[web]
+command = "npm start"
+depends_on = ["db"]
+`)
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	err = cfg.Filter(nil, []string{"db"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(cfg.Processes) != 1 {
+		t.Fatalf("expected 1 process, got %d", len(cfg.Processes))
+	}
+
+	web := cfg.Processes["web"]
+	if len(web.DependsOn) != 0 {
+		t.Errorf("expected web.DependsOn to be pruned, got %v", web.DependsOn)
 	}
 }

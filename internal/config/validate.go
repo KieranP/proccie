@@ -63,12 +63,7 @@ func validate(procs map[string]Process) error {
 		return fmt.Errorf("config validation failed:\n  %s", strings.Join(errs, "\n  "))
 	}
 
-	err := checkCycles(procs)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return checkCycles(procs)
 }
 
 // checkCycles detects circular dependencies using DFS with three-color marking.

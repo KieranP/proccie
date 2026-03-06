@@ -60,7 +60,34 @@ func (c *Config) Filter(only, except []string) error {
 		for _, name := range except {
 			delete(c.Processes, name)
 		}
+
+		// Prune dangling depends_on entries that reference removed
+		// processes. This avoids the runner hanging on a broadcast
+		// channel that will never be created.
+		c.pruneDanglingDeps()
 	}
 
 	return nil
+}
+
+// pruneDanglingDeps removes any depends_on entries that reference
+// processes no longer present in the config (e.g. after -except
+// filtering).
+func (c *Config) pruneDanglingDeps() {
+	for name := range c.Processes {
+		proc := c.Processes[name]
+
+		var kept []string
+
+		for _, dep := range proc.DependsOn {
+			if _, ok := c.Processes[dep]; ok {
+				kept = append(kept, dep)
+			}
+		}
+
+		if len(kept) != len(proc.DependsOn) {
+			proc.DependsOn = kept
+			c.Processes[name] = proc
+		}
+	}
 }

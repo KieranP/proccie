@@ -9,6 +9,8 @@ import (
 )
 
 func TestPrefixWriterBasic(t *testing.T) {
+	t.Parallel()
+
 	var buf bytes.Buffer
 
 	mux := log.NewMux(&buf, 6, true)
@@ -41,6 +43,8 @@ func TestPrefixWriterBasic(t *testing.T) {
 }
 
 func TestPrefixWriterPartialLines(t *testing.T) {
+	t.Parallel()
+
 	var buf bytes.Buffer
 
 	mux := log.NewMux(&buf, 4, true)
@@ -70,6 +74,8 @@ func TestPrefixWriterPartialLines(t *testing.T) {
 }
 
 func TestPrefixWriterFlush(t *testing.T) {
+	t.Parallel()
+
 	var buf bytes.Buffer
 
 	mux := log.NewMux(&buf, 4, true)
@@ -100,6 +106,8 @@ func TestPrefixWriterFlush(t *testing.T) {
 }
 
 func TestSystemLog(t *testing.T) {
+	t.Parallel()
+
 	var buf bytes.Buffer
 
 	mux := log.NewMux(&buf, 6, true)
@@ -117,6 +125,8 @@ func TestSystemLog(t *testing.T) {
 }
 
 func TestSystemLogSuppressedWithoutDebug(t *testing.T) {
+	t.Parallel()
+
 	var buf bytes.Buffer
 
 	mux := log.NewMux(&buf, 6, false)
@@ -129,6 +139,8 @@ func TestSystemLogSuppressedWithoutDebug(t *testing.T) {
 }
 
 func TestMultipleWritersDifferentColors(t *testing.T) {
+	t.Parallel()
+
 	var buf bytes.Buffer
 
 	mux := log.NewMux(&buf, 4, true)
@@ -157,6 +169,8 @@ func TestMultipleWritersDifferentColors(t *testing.T) {
 }
 
 func TestPrefixWriterBufferCap(t *testing.T) {
+	t.Parallel()
+
 	var buf bytes.Buffer
 
 	mux := log.NewMux(&buf, 4, true)
@@ -179,6 +193,8 @@ func TestPrefixWriterBufferCap(t *testing.T) {
 }
 
 func TestLogFile(t *testing.T) {
+	t.Parallel()
+
 	var console, logFile bytes.Buffer
 
 	mux := log.NewMux(&console, 6, true)
@@ -216,6 +232,8 @@ func TestLogFile(t *testing.T) {
 }
 
 func TestLogFileFlush(t *testing.T) {
+	t.Parallel()
+
 	var console, logFile bytes.Buffer
 
 	mux := log.NewMux(&console, 4, true)
@@ -250,6 +268,8 @@ func TestLogFileFlush(t *testing.T) {
 }
 
 func TestLogFileBufferCap(t *testing.T) {
+	t.Parallel()
+
 	var console, logFile bytes.Buffer
 
 	mux := log.NewMux(&console, 4, true)
@@ -274,6 +294,8 @@ func TestLogFileBufferCap(t *testing.T) {
 }
 
 func TestLogFileNilDoesNotPanic(t *testing.T) {
+	t.Parallel()
+
 	var buf bytes.Buffer
 
 	mux := log.NewMux(&buf, 4, true)
@@ -298,6 +320,8 @@ func TestLogFileNilDoesNotPanic(t *testing.T) {
 }
 
 func TestLogFilePerProcess(t *testing.T) {
+	t.Parallel()
+
 	var console, logA, logB bytes.Buffer
 
 	mux := log.NewMux(&console, 4, true)

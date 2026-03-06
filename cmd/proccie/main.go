@@ -1,3 +1,7 @@
+// Package main is the CLI entrypoint for proccie, a process manager
+// that reads a TOML configuration file and orchestrates multiple child
+// processes with dependency ordering, readiness checks, and graceful
+// shutdown.
 package main
 
 import (
@@ -22,9 +26,9 @@ const (
 	// the first (graceful) and second (force) signals to be queued.
 	signalChSize = 2
 
-	// forceShutdownDelay is the time to wait after sending SIGKILL before
-	// hard-exiting the process.
-	forceShutdownDelay = 500 * time.Millisecond
+	// defaultForceShutdownDelay is the time to wait after sending SIGKILL
+	// (on a forced shutdown) before hard-exiting the process manager.
+	defaultForceShutdownDelay = 500 * time.Millisecond
 )
 
 func main() {
@@ -34,6 +38,11 @@ func main() {
 func run() int {
 	configPath := flag.String("f", "Procfile.toml", "path to the TOML config file")
 	timeout := flag.Duration("t", runner.DefaultShutdownTimeout, "shutdown timeout before SIGKILL")
+	forceDelay := flag.Duration(
+		"k",
+		defaultForceShutdownDelay,
+		"delay after force SIGKILL before hard exit",
+	)
 	showVersion := flag.Bool("version", false, "print version and exit")
 	debug := flag.Bool("debug", false, "show system log lines")
 	onlyFlag := flag.String(
@@ -118,7 +127,7 @@ func run() int {
 	sigCh := make(chan os.Signal, signalChSize)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	go handleSignals(sigCh, r, mux, cancel)
+	go handleSignals(sigCh, r, mux, cancel, *forceDelay)
 
 	mux.SystemLog("proccie %s starting with %d process(es)", version, len(cfg.Processes))
 
@@ -135,6 +144,7 @@ func handleSignals(
 	r *runner.Runner,
 	mux *log.Mux,
 	cancel context.CancelFunc,
+	forceDelay time.Duration,
 ) {
 	sig := <-sigCh
 	mux.SystemLog("received signal: %s", sig)
@@ -145,8 +155,10 @@ func handleSignals(
 	sig = <-sigCh
 	mux.SystemLog("received second signal: %s, forcing shutdown", sig)
 	r.ForceShutdown()
+
 	// Give a moment for SIGKILL to propagate, then hard exit.
-	time.Sleep(forceShutdownDelay)
+	time.Sleep(forceDelay)
+
 	os.Exit(1)
 }
 

@@ -8,6 +8,8 @@ import (
 )
 
 func TestLoadMissingCommand(t *testing.T) {
+	t.Parallel()
+
 	path := writeTempConfig(t, `
 [web]
 exit_codes = [0]
@@ -24,6 +26,8 @@ exit_codes = [0]
 }
 
 func TestLoadUndefinedDependency(t *testing.T) {
+	t.Parallel()
+
 	path := writeTempConfig(t, `
 [web]
 command = "npm start"
@@ -41,6 +45,8 @@ depends_on = ["db"]
 }
 
 func TestLoadSelfDependency(t *testing.T) {
+	t.Parallel()
+
 	path := writeTempConfig(t, `
 [web]
 command = "npm start"
@@ -58,6 +64,8 @@ depends_on = ["web"]
 }
 
 func TestLoadCyclicDependency(t *testing.T) {
+	t.Parallel()
+
 	path := writeTempConfig(t, `
 [a]
 command = "echo a"
@@ -79,6 +87,8 @@ depends_on = ["a"]
 }
 
 func TestLoadMultipleErrors(t *testing.T) {
+	t.Parallel()
+
 	path := writeTempConfig(t, `
 [web]
 exit_codes = [0]
@@ -98,6 +108,8 @@ exit_codes = [0]
 }
 
 func TestLoadReadinessAndExitCodesMutuallyExclusive(t *testing.T) {
+	t.Parallel()
+
 	path := writeTempConfig(t, `
 [web]
 command    = "npm start"
@@ -118,6 +130,8 @@ exit_codes = [0]
 // --- max_retries tests ---
 
 func TestLoadMaxRetries(t *testing.T) {
+	t.Parallel()
+
 	path := writeTempConfig(t, `
 [web]
 command     = "npm start"
@@ -136,6 +150,8 @@ max_retries = 3
 }
 
 func TestLoadMaxRetriesDefault(t *testing.T) {
+	t.Parallel()
+
 	path := writeTempConfig(t, `
 [web]
 command = "npm start"
@@ -153,6 +169,8 @@ command = "npm start"
 }
 
 func TestLoadMaxRetriesNegativeRejected(t *testing.T) {
+	t.Parallel()
+
 	path := writeTempConfig(t, `
 [web]
 command     = "npm start"
@@ -170,6 +188,8 @@ max_retries = -1
 }
 
 func TestLoadDuplicateDependency(t *testing.T) {
+	t.Parallel()
+
 	path := writeTempConfig(t, `
 [db]
 command = "echo db"

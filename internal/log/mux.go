@@ -1,3 +1,6 @@
+// Package log provides colored, multiplexed log output for child
+// processes. It prefixes each line with a color-coded process name and
+// supports optional per-process plain-text log file output.
 package log //nolint:revive // intentional; project does not use stdlib log
 
 import (
@@ -141,7 +144,7 @@ func (pw *prefixWriter) Flush() {
 			_, _ = fmt.Fprintf(pw.logFile, "%s%s\n", pw.plainPrefix, pw.buf)
 		}
 
-		pw.buf = nil
+		pw.buf = pw.buf[:0]
 	}
 }
 

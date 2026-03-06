@@ -69,6 +69,7 @@ Commands:
 Options:
   -f string      path to the TOML config file (default "Procfile.toml")
   -t duration    shutdown timeout before SIGKILL (default 10s)
+  -k duration    delay after force SIGKILL before hard exit (default 500ms)
   -only string   comma-separated list of processes to run (with dependencies)
   -except string comma-separated list of processes to exclude
   -debug         show system log lines
@@ -81,7 +82,7 @@ proccie uses a two-phase shutdown:
 
 1. **SIGTERM** -- on first `Ctrl-C` (or `SIGTERM`), proccie sends `SIGTERM` to every process group and waits for them to exit.
 2. **SIGKILL** -- if processes haven't exited after the timeout (default 10s, configurable with `-t`), proccie sends `SIGKILL`.
-3. **Force quit** -- sending a second `Ctrl-C` during shutdown immediately `SIGKILL`s all processes.
+3. **Force quit** -- sending a second `Ctrl-C` during shutdown immediately `SIGKILL`s all processes. After a brief delay (default 500ms, configurable with `-k`), proccie hard-exits.
 
 When a process exits with a code not in its `exit_codes` list (or has no `exit_codes` at all), proccie initiates a full shutdown and propagates that exit code as its own.
 

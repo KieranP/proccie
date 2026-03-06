@@ -27,6 +27,7 @@ Run `make` (or `make help`) to see all available targets:
 | `test`    | Run all tests                     |
 | `vet`     | Run `go vet`                      |
 | `lint`    | Run `golangci-lint`               |
+| `format`  | Format the code                   |
 | `check`   | Run vet, lint, and tests          |
 | `clean`   | Remove build artifacts            |
 | `install` | Install proccie to `GOPATH/bin`   |
