@@ -64,7 +64,7 @@ When a process has `depends_on`, its dependencies must be **ready** before it st
 
 2. **`readiness` (long-running services with health checks)** -- The dependency is ready when the readiness command exits with code 0. The command is polled at the configured interval until it succeeds or the timeout elapses. If the timeout is reached, the dependent process will not start and proccie shuts down with a non-zero exit code.
 
-3. **Neither (bare long-running services)** -- The dependency is ready immediately after it launches. This is the simplest mode, appropriate when no health check is needed and the process doesn't exit.
+3. **Neither (bare long-running services)** -- The dependency is ready immediately after it launches. This is the simplest mode, appropriate when no health check is needed and the process doesn't exit. Because dependents start as soon as such a process launches -- not when it is actually serving -- proccie prints a warning when a depended-on process uses this mode, in case `exit_codes` or `readiness` was intended.
 
 ```toml
 # 1. Run-to-completion: ready when it exits with code 0

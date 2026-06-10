@@ -50,6 +50,41 @@ fn validate_reports_an_invalid_config() {
 }
 
 #[test]
+fn validate_warns_when_a_dependency_releases_at_launch() {
+    // `other` is depended on but has no readiness signal, so dependents start
+    // the moment it launches -- valid, but worth warning about.
+    let (_dir, path) = write_config(
+        r#"
+[dependencies]
+command = "pnpm install"
+exit_codes = [0]
+
+[other]
+command = "sleep 45"
+
+[frontend]
+command = "pnpm dev --open"
+depends_on = ["dependencies", "other"]
+"#,
+    );
+
+    let output = Command::new(BIN)
+        .args(["--config", path.to_str().unwrap(), "validate"])
+        .output()
+        .expect("run proccie");
+
+    // Still valid: warnings do not fail the config.
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("valid"));
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("warning"), "{stderr}");
+    assert!(stderr.contains("other"), "{stderr}");
+    // `dependencies` sets exit_codes, so it must not be warned about.
+    assert!(!stderr.contains("dependencies"), "{stderr}");
+}
+
+#[test]
 fn validate_reports_a_missing_file() {
     let output = Command::new(BIN)
         .args(["--config", "/nonexistent/Procfile.toml", "validate"])

@@ -60,6 +60,15 @@ pub enum ConfigError {
     UnknownExcept(String),
 }
 
+/// A non-fatal configuration concern; the config is still valid and runnable.
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigWarning {
+    #[error(
+        "process {0:?} has no \"exit_codes\" or \"readiness\"; dependents start at launch, not when ready"
+    )]
+    DependedOnReleasesAtLaunch(String),
+}
+
 /// One validation problem, tied to the process that triggered it.
 #[derive(Debug, thiserror::Error)]
 #[error("process {process:?}: {kind}")]

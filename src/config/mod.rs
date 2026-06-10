@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 use std::time::Duration;
 
-pub use error::{ConfigError, ValidationIssue, ValidationIssueKind};
+pub use error::{ConfigError, ConfigWarning, ValidationIssue, ValidationIssueKind};
 pub use types::{ExitCodes, Process, Readiness, ReadyWhen, parse_duration};
 
 /// Maximum time to wait for a readiness command to succeed before
@@ -61,6 +61,26 @@ impl Config {
     /// Returns the processes, keyed by name in alphabetical order.
     pub fn processes(&self) -> &BTreeMap<String, Process> {
         &self.processes
+    }
+
+    /// Non-fatal concerns: a depended-on process with no readiness signal
+    /// releases its dependents at launch, which is valid but easy to mistake.
+    pub fn warnings(&self) -> Vec<ConfigWarning> {
+        let depended_on: HashSet<&str> = self
+            .processes
+            .values()
+            .flat_map(|p| p.depends_on.iter().map(String::as_str))
+            .collect();
+
+        self.processes
+            .iter()
+            .filter(|(name, p)| {
+                depended_on.contains(name.as_str())
+                    && p.exit_codes.is_empty()
+                    && p.readiness.is_none()
+            })
+            .map(|(name, _)| ConfigWarning::DependedOnReleasesAtLaunch(name.clone()))
+            .collect()
     }
 
     /// Returns all process names in alphabetical order.

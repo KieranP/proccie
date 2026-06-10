@@ -68,6 +68,7 @@ async fn run() -> i32 {
         Ok(config) => config,
         Err(code) => return code,
     };
+    warn_all(&config);
 
     // Strip ANSI styling automatically when stdout isn't a terminal.
     let stdout = anstream::AutoStream::auto(std::io::stdout());
@@ -108,6 +109,7 @@ fn load_runnable_config(cli: &Cli) -> Result<Config, i32> {
 fn validate(path: &Path) -> i32 {
     match Config::load(path) {
         Ok(config) => {
+            warn_all(&config);
             println!(
                 "{}: valid ({} process(es): {})",
                 path.display(),
@@ -124,6 +126,13 @@ fn validate(path: &Path) -> i32 {
 fn fail(error: &dyn std::error::Error) -> i32 {
     eprintln!("error: {error}");
     1
+}
+
+/// Prints each non-fatal config warning to stderr; the config still runs.
+fn warn_all(config: &Config) {
+    for warning in config.warnings() {
+        eprintln!("warning: {warning}");
+    }
 }
 
 /// Trims each value and drops the empties from a comma-split CLI flag.
