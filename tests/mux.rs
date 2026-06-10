@@ -2,7 +2,7 @@
 
 mod common;
 
-use proccie::mux::{MAX_LINE_BUFFER, Mux};
+use proccie::mux::{LogLevel, MAX_LINE_BUFFER, Mux};
 
 use common::{SharedBuf, build_mux};
 
@@ -10,7 +10,7 @@ const ESC: &str = "\x1b[";
 
 #[test]
 fn emits_complete_lines_with_prefix() {
-    let (mux, out) = build_mux(6, true);
+    let (mux, out) = build_mux(6, LogLevel::Debug);
     let w = mux.prefix_writer("web", None).stream();
 
     w.write(b"hello\nworld\n");
@@ -24,7 +24,7 @@ fn emits_complete_lines_with_prefix() {
 
 #[test]
 fn buffers_partial_lines_until_newline() {
-    let (mux, out) = build_mux(4, true);
+    let (mux, out) = build_mux(4, LogLevel::Debug);
     let w = mux.prefix_writer("app", None).stream();
 
     w.write(b"hel");
@@ -36,7 +36,7 @@ fn buffers_partial_lines_until_newline() {
 
 #[test]
 fn flush_emits_incomplete_final_line() {
-    let (mux, out) = build_mux(4, true);
+    let (mux, out) = build_mux(4, LogLevel::Debug);
     let w = mux.prefix_writer("app", None).stream();
 
     w.write(b"no newline");
@@ -48,7 +48,7 @@ fn flush_emits_incomplete_final_line() {
 
 #[test]
 fn large_write_without_newline_is_force_flushed() {
-    let (mux, out) = build_mux(4, true);
+    let (mux, out) = build_mux(4, LogLevel::Debug);
     let w = mux.prefix_writer("app", None).stream();
 
     w.write(&vec![b'x'; MAX_LINE_BUFFER + 100]);
@@ -56,27 +56,56 @@ fn large_write_without_newline_is_force_flushed() {
 }
 
 #[test]
-fn system_log_is_gated_on_debug() {
-    let (mux, out) = build_mux(6, false);
-    mux.system_log("should not appear");
-    assert!(out.is_empty());
+fn log_lines_below_threshold_are_suppressed() {
+    // At the warn threshold, debug and info are dropped; warn and error show.
+    let (mux, out) = build_mux(6, LogLevel::Warn);
+    mux.debug("debug line");
+    mux.info("info line");
+    assert!(out.is_empty(), "{}", out.contents());
 
-    let (mux, out) = build_mux(6, true);
-    mux.system_log("hello world");
-    assert!(out.contents().contains("system"));
-    assert!(out.contents().contains("hello world"));
+    mux.warn("warn line");
+    mux.error("error line");
+    let output = out.contents();
+    assert!(
+        output.contains("warn line") && output.contains("error line"),
+        "{output}"
+    );
+}
+
+#[test]
+fn log_prefix_carries_the_level() {
+    let (mux, out) = build_mux(6, LogLevel::Debug);
+    mux.info("hello world");
+    let output = out.contents();
+    assert!(output.contains("system [INFO]"), "{output}");
+    assert!(output.contains("hello world"), "{output}");
+}
+
+#[test]
+fn log_level_parses_case_insensitively_and_orders() {
+    assert_eq!("DEBUG".parse(), Ok(LogLevel::Debug));
+    assert_eq!("Info".parse(), Ok(LogLevel::Info));
+    assert_eq!("warning".parse(), Ok(LogLevel::Warn));
+    assert_eq!("error".parse(), Ok(LogLevel::Error));
+    assert!("loud".parse::<LogLevel>().is_err());
+
+    assert!(LogLevel::Debug < LogLevel::Info);
+    assert!(LogLevel::Info < LogLevel::Warn);
+    assert!(LogLevel::Warn < LogLevel::Error);
 }
 
 #[test]
 fn prefix_width_measures_chars_not_bytes() {
-    // A 4-char, 5-byte name must align with a 4-char ASCII name.
-    assert_eq!(Mux::prefix_width(["café", "data"]), 6); // "system" wins
-    assert_eq!(Mux::prefix_width(["café-server"]), 11);
+    // Short names align to the widest system tag, `system [DEBUG]` (14 chars).
+    assert_eq!(Mux::prefix_width(["café", "data"]), 14);
+    // A name longer than the system tag wins, measured in chars not bytes:
+    // "café-server-xyz" is 15 chars but 16 bytes.
+    assert_eq!(Mux::prefix_width(["café-server-xyz"]), 15);
 }
 
 #[test]
 fn log_file_copy_is_plain_text() {
-    let (mux, console) = build_mux(6, true);
+    let (mux, console) = build_mux(6, LogLevel::Debug);
     let log_file = SharedBuf::new();
     let w = mux
         .prefix_writer("web", Some(Box::new(log_file.clone())))
@@ -95,7 +124,7 @@ fn log_file_copy_is_plain_text() {
 
 #[test]
 fn each_process_writes_to_its_own_log_file() {
-    let (mux, console) = build_mux(4, true);
+    let (mux, console) = build_mux(4, LogLevel::Debug);
     let log_a = SharedBuf::new();
     let log_b = SharedBuf::new();
 

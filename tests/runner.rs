@@ -11,13 +11,15 @@ use tempfile::TempDir;
 use proccie::config::Config;
 use proccie::runner::Runner;
 
+use proccie::mux::LogLevel;
+
 use common::{SharedBuf, build_mux, wait_for_output, write_config};
 
 const TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Wraps a loaded config in a runner with test defaults, capturing its log output.
 fn build_runner(config: Config) -> (Runner, SharedBuf) {
-    let (mux, out) = build_mux(10, true);
+    let (mux, out) = build_mux(10, LogLevel::Debug);
     let runner = Runner::new(Arc::new(config), mux, Duration::from_secs(2));
     (runner, out)
 }
@@ -197,7 +199,7 @@ async fn shutdown_is_idempotent() {
     let (runner, out, _dir) = make_runner("[app]\ncommand = \"sleep 30\"\n");
 
     let handle = run_in_background(&runner);
-    assert!(wait_for_output(&out, "starting app", TIMEOUT).await);
+    assert!(wait_for_output(&out, "starting app: sleep 30", TIMEOUT).await);
 
     runner.shutdown();
     runner.shutdown();
@@ -214,7 +216,7 @@ async fn shutdown_escalates_to_sigkill_for_stubborn_processes() {
         make_runner("[app]\ncommand = \"trap '' TERM; while true; do sleep 0.2; done\"\n");
 
     let handle = run_in_background(&runner);
-    assert!(wait_for_output(&out, "starting app", TIMEOUT).await);
+    assert!(wait_for_output(&out, "starting app: trap", TIMEOUT).await);
 
     runner.shutdown();
     let stopped = tokio::time::timeout(Duration::from_secs(10), handle).await;

@@ -11,8 +11,76 @@ use anstyle::{AnsiColor, Style};
 /// for processes that emit large output without newlines.
 pub const MAX_LINE_BUFFER: usize = 1024 * 1024; // 1 MiB
 
-/// Prefix for proccie's own log lines, alongside the process prefixes.
+/// Base name for proccie's own log lines; the level is appended (e.g.
+/// `system [INFO]`), alongside the process prefixes.
 const SYSTEM_PREFIX: &str = "system";
+
+/// Severity of a proccie system log line. A line is emitted only when its level
+/// is at or above the `Mux`'s configured threshold; ordering follows the
+/// declaration order (`Debug` < `Info` < `Warn` < `Error`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum LogLevel {
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+impl LogLevel {
+    /// Every level, lowest to highest.
+    pub const ALL: [LogLevel; 4] = [
+        LogLevel::Debug,
+        LogLevel::Info,
+        LogLevel::Warn,
+        LogLevel::Error,
+    ];
+
+    /// The uppercase label shown in the log prefix (e.g. `INFO`).
+    pub fn label(self) -> &'static str {
+        match self {
+            LogLevel::Debug => "DEBUG",
+            LogLevel::Info => "INFO",
+            LogLevel::Warn => "WARN",
+            LogLevel::Error => "ERROR",
+        }
+    }
+
+    /// The console style for lines at this level.
+    fn style(self) -> Style {
+        match self {
+            LogLevel::Debug | LogLevel::Info => Style::new().dimmed(),
+            LogLevel::Warn => Style::new().fg_color(Some(AnsiColor::Yellow.into())),
+            LogLevel::Error => Style::new().fg_color(Some(AnsiColor::Red.into())).bold(),
+        }
+    }
+}
+
+impl std::str::FromStr for LogLevel {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "debug" => Ok(LogLevel::Debug),
+            "info" => Ok(LogLevel::Info),
+            "warn" | "warning" => Ok(LogLevel::Warn),
+            "error" => Ok(LogLevel::Error),
+            _ => Err(format!(
+                "invalid log level '{s}' (expected one of: debug, info, warn, error)"
+            )),
+        }
+    }
+}
+
+impl std::fmt::Display for LogLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+/// The full system prefix for `level`, e.g. `system [WARN]`.
+fn system_tag(level: LogLevel) -> String {
+    format!("{SYSTEM_PREFIX} [{}]", level.label())
+}
 
 /// Colors cycled through for process prefixes.
 const PREFIX_COLORS: &[AnsiColor] = &[
@@ -33,31 +101,37 @@ pub struct Mux {
     out: Mutex<Box<dyn Write + Send>>,
     color_idx: AtomicUsize,
     pad_width: usize,
-    debug: bool,
+    level: LogLevel,
 }
 
 impl Mux {
-    /// Width that fits every process name prefix plus the system prefix.
+    /// Width that fits every process name prefix plus the widest system prefix
+    /// (`system [DEBUG]`), so process and system lines align.
     pub fn prefix_width<'a>(names: impl IntoIterator<Item = &'a str>) -> usize {
+        let widest_system = LogLevel::ALL
+            .iter()
+            .map(|level| system_tag(*level).chars().count())
+            .max()
+            .unwrap_or(0);
         names
             .into_iter()
-            .chain(std::iter::once(SYSTEM_PREFIX))
             // `format!` pads by char count, so measure in chars, not bytes.
             .map(|name| name.chars().count())
+            .chain(std::iter::once(widest_system))
             .max()
             .unwrap_or(0)
     }
 
     /// Creates a `Mux` writing to `out`, padding name prefixes to `pad_width`.
-    /// System log lines are emitted only when `debug` is set.
-    pub fn new(out: impl Write + Send + 'static, pad_width: usize, debug: bool) -> Arc<Mux> {
+    /// System lines below `level` are suppressed.
+    pub fn new(out: impl Write + Send + 'static, pad_width: usize, level: LogLevel) -> Arc<Mux> {
         Arc::new(Mux {
             // Every emitted batch ends in '\n', so LineWriter passes it
             // through to `out` as a single write.
             out: Mutex::new(Box::new(LineWriter::new(out))),
             color_idx: AtomicUsize::new(0),
             pad_width,
-            debug,
+            level,
         })
     }
 
@@ -81,25 +155,45 @@ impl Mux {
         })
     }
 
-    /// Writes a system-level message with a dimmed "system" prefix. The
-    /// message is only written when debug mode is enabled.
-    pub fn system_log(&self, msg: impl AsRef<str>) {
-        if !self.debug {
+    /// Writes a system-level message tagged `system [LEVEL]` and styled by
+    /// severity, only when `level` meets the configured threshold.
+    pub fn log(&self, level: LogLevel, msg: impl AsRef<str>) {
+        if level < self.level {
             return;
         }
 
-        let dim = Style::new().dimmed();
-        let padded = pad(SYSTEM_PREFIX, self.pad_width);
+        let style = level.style();
+        let padded = pad(&system_tag(level), self.pad_width);
 
         let mut out = self.out.lock().unwrap();
         for line in msg.as_ref().trim_end_matches('\n').split('\n') {
             let _ = writeln!(
                 out,
                 "{open}{padded}{reset} | {open}{line}{reset}",
-                open = dim.render(),
-                reset = dim.render_reset(),
+                open = style.render(),
+                reset = style.render_reset(),
             );
         }
+    }
+
+    /// Logs at [`LogLevel::Debug`].
+    pub fn debug(&self, msg: impl AsRef<str>) {
+        self.log(LogLevel::Debug, msg);
+    }
+
+    /// Logs at [`LogLevel::Info`].
+    pub fn info(&self, msg: impl AsRef<str>) {
+        self.log(LogLevel::Info, msg);
+    }
+
+    /// Logs at [`LogLevel::Warn`].
+    pub fn warn(&self, msg: impl AsRef<str>) {
+        self.log(LogLevel::Warn, msg);
+    }
+
+    /// Logs at [`LogLevel::Error`].
+    pub fn error(&self, msg: impl AsRef<str>) {
+        self.log(LogLevel::Error, msg);
     }
 }
 

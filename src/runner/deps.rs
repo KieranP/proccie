@@ -27,7 +27,7 @@ impl Shared {
                 .verb();
 
             self.mux
-                .system_log(format!("{name} waiting for {dep} to {dep_mode}..."));
+                .debug(format!("{name} waiting for {dep} to {dep_mode}..."));
 
             let Some(tx) = self.deps.get(dep) else {
                 continue;
@@ -36,13 +36,13 @@ impl Shared {
 
             tokio::select! {
                 () = self.token.cancelled() => {
-                    self.mux.system_log(format!("{name} cancelled while waiting for {dep}"));
+                    self.mux.debug(format!("{name} cancelled while waiting for {dep}"));
                     return false;
                 }
                 result = rx.wait_for(|s| *s != DepState::Pending) => {
                     let ready = result.is_ok_and(|state| *state == DepState::Ready);
                     if !ready {
-                        self.mux.system_log(format!(
+                        self.mux.warn(format!(
                             "{name}: dependency {dep} failed to become ready"
                         ));
                         return false;

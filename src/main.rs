@@ -8,7 +8,7 @@ use clap::{Parser, Subcommand};
 use tokio::signal::unix::{Signal, SignalKind, signal};
 
 use proccie::config::{Config, parse_duration};
-use proccie::mux::Mux;
+use proccie::mux::{LogLevel, Mux};
 use proccie::runner::Runner;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -38,9 +38,9 @@ struct Cli {
     #[arg(long, value_delimiter = ',')]
     except: Vec<String>,
 
-    /// Show system log lines.
-    #[arg(long)]
-    debug: bool,
+    /// Minimum severity to log: `debug`, `info`, `warn`, or `error`.
+    #[arg(long = "log-level", default_value = "info", value_parser = parse_log_level)]
+    log_level: LogLevel,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -73,17 +73,17 @@ async fn run() -> i32 {
     // Strip ANSI styling automatically when stdout isn't a terminal.
     let stdout = anstream::AutoStream::auto(std::io::stdout());
     let width = Mux::prefix_width(config.names());
-    let mux = Mux::new(stdout, width, cli.debug);
+    let mux = Mux::new(stdout, width, cli.log_level);
     let count = config.processes().len();
     let runner = Runner::new(Arc::new(config), Arc::clone(&mux), cli.timeout);
 
     spawn_signal_handler(runner.clone(), Arc::clone(&mux), cli.force_delay);
 
-    mux.system_log(format!(
+    mux.info(format!(
         "proccie {VERSION} starting with {count} process(es)"
     ));
     let code = runner.run().await;
-    mux.system_log(format!("proccie exiting (code {code})"));
+    mux.info(format!("proccie exiting (code {code})"));
     code
 }
 
@@ -122,6 +122,11 @@ fn validate(path: &Path) -> i32 {
     }
 }
 
+/// Parses a `--log-level` value, surfacing a clap-friendly error string.
+fn parse_log_level(s: &str) -> Result<LogLevel, String> {
+    s.parse()
+}
+
 /// Prints an error to stderr and returns the failure exit code.
 fn fail(error: &dyn std::error::Error) -> i32 {
     eprintln!("error: {error}");
@@ -152,11 +157,11 @@ fn spawn_signal_handler(runner: Runner, mux: Arc<Mux>, force_delay: Duration) {
         let mut sigterm = signal(SignalKind::terminate()).expect("install SIGTERM handler");
 
         let first = next_signal(&mut sigint, &mut sigterm).await;
-        mux.system_log(format!("received signal: {first}"));
+        mux.info(format!("received signal: {first}"));
         runner.shutdown();
 
         let second = next_signal(&mut sigint, &mut sigterm).await;
-        mux.system_log(format!(
+        mux.warn(format!(
             "received second signal: {second}, forcing shutdown"
         ));
         runner.force_shutdown();

@@ -214,7 +214,7 @@ proccie [options] [command]
 | `-k`, `--force-delay`     | `500ms`         | Delay after force SIGKILL before hard exit.                                                         |
 | `--only`                  | _(none)_        | Comma-separated list of processes to run. Their transitive dependencies are included automatically. |
 | `--except`                | _(none)_        | Comma-separated list of processes to exclude.                                                       |
-| `--debug`                 | `false`         | Show system log lines.                                                                              |
+| `--log-level`             | `info`          | Minimum severity to log: `debug`, `info`, `warn`, or `error`.                                       |
 | `-h`, `--help`            | _(n/a)_         | Print help and exit.                                                                                |
 | `-V`, `--version`         | `false`         | Print version and exit.                                                                             |
 

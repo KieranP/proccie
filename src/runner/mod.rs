@@ -135,7 +135,7 @@ impl Shared {
             state.shutting_down = true;
         }
 
-        self.mux.system_log("shutting down all processes...");
+        self.mux.info("shutting down all processes...");
         self.token.cancel();
         self.signal_all(Signal::SIGTERM, "SIGTERM");
 
@@ -150,7 +150,7 @@ impl Shared {
     /// Forced shutdown: `SIGKILL` everything right now.
     fn force_shutdown(&self) {
         self.mux
-            .system_log("forced shutdown, sending SIGKILL to all processes...");
+            .warn("forced shutdown, sending SIGKILL to all processes...");
         self.signal_all(Signal::SIGKILL, "SIGKILL (forced)");
     }
 
@@ -171,14 +171,14 @@ impl Shared {
         };
 
         for (name, pgid) in groups {
-            self.mux.system_log(format!(
+            self.mux.debug(format!(
                 "sending {label} to {name} (pgid {})",
                 pgid.as_raw()
             ));
 
             match nix::sys::signal::killpg(pgid, sig) {
                 Ok(()) | Err(nix::errno::Errno::ESRCH) => {}
-                Err(e) => self.mux.system_log(format!("failed to signal {name}: {e}")),
+                Err(e) => self.mux.warn(format!("failed to signal {name}: {e}")),
             }
         }
     }
@@ -202,7 +202,7 @@ impl Shared {
     /// Handles a panicking process task: log it, fail dependents, and shut
     /// down the rest.
     fn recover_panic(self: &Arc<Self>, name: &str) {
-        self.mux.system_log(format!("panic in {name} task"));
+        self.mux.error(format!("panic in {name} task"));
         self.fail_run(name, 1);
     }
 }

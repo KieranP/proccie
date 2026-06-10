@@ -46,7 +46,7 @@ impl Shared {
         let total_timeout = readiness.timeout_or_default();
         let check_interval = readiness.interval_or_default();
 
-        self.mux.system_log(format!(
+        self.mux.debug(format!(
             "{name}: polling readiness command (timeout {}, interval {}): {}",
             humantime::format_duration(total_timeout),
             humantime::format_duration(check_interval),
@@ -81,7 +81,7 @@ impl Shared {
                     return;
                 }
                 () = &mut deadline => {
-                    self.mux.system_log(format!(
+                    self.mux.error(format!(
                         "{name}: readiness check timed out after {}, initiating shutdown",
                         humantime::format_duration(total_timeout),
                     ));
@@ -92,7 +92,7 @@ impl Shared {
                 }
                 passed = attempt => {
                     if passed {
-                        self.mux.system_log(format!("{name}: readiness check passed"));
+                        self.mux.info(format!("{name}: readiness check passed"));
                         self.signal_dep_result(&name, DepState::Ready);
                         return;
                     }
@@ -103,8 +103,7 @@ impl Shared {
 
     /// Reports a cancelled readiness poll: log it and fail dependents.
     fn readiness_cancelled(&self, name: &str) {
-        self.mux
-            .system_log(format!("{name}: readiness check cancelled"));
+        self.mux.debug(format!("{name}: readiness check cancelled"));
         self.signal_dep_result(name, DepState::Failed);
     }
 }

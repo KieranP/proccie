@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use proccie::mux::Mux;
+use proccie::mux::{LogLevel, Mux};
 use tempfile::TempDir;
 
 /// An in-memory writer that can be cloned to share one buffer between a
@@ -45,10 +45,10 @@ impl Write for SharedBuf {
     }
 }
 
-/// Builds a `Mux` that captures its output in the returned [`SharedBuf`].
-pub fn build_mux(pad_width: usize, debug: bool) -> (Arc<Mux>, SharedBuf) {
+/// Builds a `Mux` at `level` that captures its output in the returned [`SharedBuf`].
+pub fn build_mux(pad_width: usize, level: LogLevel) -> (Arc<Mux>, SharedBuf) {
     let out = SharedBuf::new();
-    let mux = Mux::new(out.clone(), pad_width, debug);
+    let mux = Mux::new(out.clone(), pad_width, level);
     (mux, out)
 }
 

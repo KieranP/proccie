@@ -72,7 +72,7 @@ Options:
   -k, --force-delay <DUR> delay after force SIGKILL before hard exit (default 500ms)
       --only <NAMES>      comma-separated list of processes to run (with dependencies)
       --except <NAMES>    comma-separated list of processes to exclude
-      --debug             show system log lines
+      --log-level <LEVEL> minimum severity to log: debug, info, warn, error (default info)
   -h, --help              print help and exit
   -V, --version           print version and exit
 ```

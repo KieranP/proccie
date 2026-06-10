@@ -93,7 +93,7 @@ impl Shared {
                 return;
             }
             if attempt > 1 {
-                self.mux.system_log(format!(
+                self.mux.warn(format!(
                     "{name}: retry {}/{}",
                     attempt - 1,
                     proc.max_retries
@@ -127,10 +127,11 @@ impl Shared {
         running: Option<&watch::Sender<Option<u64>>>,
         incarnation: u64,
     ) -> RunResult {
-        let (mut child, output) = match self.spawn_child(name, proc) {
+        self.mux.info(format!("starting {name}: {}", proc.command));
+        let (mut child, output) = match self.spawn_child(proc) {
             Ok(pair) => pair,
             Err(e) => {
-                self.mux.system_log(format!("failed to start {name}: {e}"));
+                self.mux.error(format!("failed to start {name}: {e}"));
                 // A process that never launched still failed the run.
                 return RunResult::Failed(1);
             }
@@ -165,9 +166,7 @@ impl Shared {
     /// Builds and spawns the command in its own process group (pgid == pid).
     /// stdout and stderr share one pipe so interleaved lines keep their write
     /// order; the returned receiver is its read end.
-    fn spawn_child(&self, name: &str, proc: &Process) -> std::io::Result<(Child, pipe::Receiver)> {
-        self.mux
-            .system_log(format!("starting {name}: {}", proc.command));
+    fn spawn_child(&self, proc: &Process) -> std::io::Result<(Child, pipe::Receiver)> {
         let (tx, rx) = pipe::pipe()?;
         let stdout = tx.into_blocking_fd()?;
         let stderr = stdout.try_clone()?;
@@ -223,7 +222,7 @@ impl Shared {
         is_shutdown: bool,
     ) -> RunResult {
         if is_shutdown {
-            self.mux.system_log(format!("{name} exited (shutdown)"));
+            self.mux.debug(format!("{name} exited (shutdown)"));
             return RunResult::Shutdown;
         }
 
@@ -241,7 +240,7 @@ impl Shared {
             && let ReadyWhen::ExpectedExit(codes) = proc.ready_when()
             && codes.allows(exit_code)
         {
-            self.mux.system_log(format!(
+            self.mux.info(format!(
                 "{name} completed with expected exit code {exit_code}"
             ));
             self.signal_dep_result(name, DepState::Ready);
@@ -249,13 +248,13 @@ impl Shared {
         }
 
         match signal {
-            Some(sig) => self.mux.system_log(format!(
+            Some(sig) => self.mux.warn(format!(
                 "{name} terminated by {} (code {exit_code})",
                 signal_name(sig)
             )),
             None => self
                 .mux
-                .system_log(format!("{name} exited with unexpected code {exit_code}")),
+                .warn(format!("{name} exited with unexpected code {exit_code}")),
         }
         RunResult::Failed(exit_code)
     }
@@ -264,13 +263,13 @@ impl Shared {
     /// exit code, and begin shutdown.
     fn fail_terminally(self: &Arc<Self>, name: &str, proc: &Process, code: i32) {
         if proc.max_retries > 0 {
-            self.mux.system_log(format!(
+            self.mux.error(format!(
                 "{name}: all {} retries exhausted, initiating shutdown",
                 proc.max_retries
             ));
         } else {
             self.mux
-                .system_log(format!("{name} failed, initiating shutdown"));
+                .error(format!("{name} failed, initiating shutdown"));
         }
         self.fail_run(name, code);
     }
@@ -292,7 +291,7 @@ impl Shared {
             )),
             Err(e) => {
                 self.mux
-                    .system_log(format!("failed to open log file for {name}: {e}"));
+                    .error(format!("failed to open log file for {name}: {e}"));
                 self.fail_run(name, 1);
                 Err(())
             }
@@ -314,7 +313,7 @@ async fn pump<R: AsyncRead + Unpin>(
             Ok(0) => break,
             Ok(n) => stream.write(&buf[..n]),
             Err(e) => {
-                mux.system_log(format!("error reading {label}: {e}"));
+                mux.warn(format!("error reading {label}: {e}"));
                 break;
             }
         }
