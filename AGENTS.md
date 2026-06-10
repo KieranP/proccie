@@ -1,20 +1,23 @@
 # AGENTS.md
 
-Go 1.25+ process manager. All commands run via `make`.
+Rust (stable, 1.95+) process manager built on Tokio. See [DEVELOP.md](DEVELOP.md)
+for build/test/lint details.
 
 ## Commands
 
-- `make check` -- run all checks (vet + lint + tests); run before submitting changes
-- `make test` -- run tests (`go test ./...`)
-- `make format` -- format code; run before committing
-- `make lint` -- run linter (`golangci-lint run`)
-- `make build` -- build binary to `bin/proccie`
+- `make check` -- fmt-check + clippy + tests; run before submitting
+- `make fmt` -- format; run before committing
 
-## Project Structure
+## Layout
 
-```
-cmd/proccie/       CLI entrypoint
-internal/config/   TOML config parsing, validation, cycle detection
-internal/runner/   Process lifecycle, shutdown, readiness, retries
-internal/log/      Colored multiplexed log output
-```
+- `src/main.rs` -- CLI, argument parsing, signal handling
+- `src/config/` -- TOML parsing, validation, cycle detection, env resolution
+- `src/runner/` -- process lifecycle, shutdown, readiness, retries (Tokio)
+- `src/mux.rs` -- colored, multiplexed log output
+
+## Conventions
+
+- Library code returns typed errors (`thiserror`); the binary renders them.
+- Concurrency: Tokio tasks, `watch` channels for readiness, `CancellationToken` for shutdown.
+- Comments are terse: doc comments ≤2 lines; inline comments ≤1 line.
+- Environment keys/values must be valid UTF-8; non-UTF-8 OS vars are skipped.

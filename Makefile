@@ -1,32 +1,29 @@
 .DEFAULT_GOAL := help
 
-VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-LDFLAGS  := -ldflags '-X main.version=$(VERSION)'
+.PHONY: build test fmt fmt-check clippy check clean install help
 
-.PHONY: build test vet lint check clean install help
-
-build: ## Build the binary to bin/proccie
-	go build $(LDFLAGS) -o bin/proccie ./cmd/proccie
+build: ## Build the release binary to target/release/proccie
+	cargo build --release
 
 test: ## Run all tests
-	go test ./...
+	cargo test
 
-vet: ## Run go vet
-	go vet ./...
+fmt: ## Format the code
+	cargo fmt
 
-lint: ## Run golangci-lint
-	golangci-lint run
+fmt-check: ## Check formatting without modifying files
+	cargo fmt --check
 
-check: vet lint test ## Run vet, lint, and tests
+clippy: ## Run clippy (lints as errors)
+	cargo clippy --all-targets -- -D warnings
 
-format: ## Format the code
-	golangci-lint fmt
+check: fmt-check clippy test ## Run formatting check, clippy, and tests
 
 clean: ## Remove build artifacts
-	rm -f bin/proccie
+	cargo clean
 
-install: ## Install proccie to GOPATH/bin
-	go install $(LDFLAGS) ./cmd/proccie
+install: ## Install proccie to ~/.cargo/bin
+	cargo install --path .
 
 help: ## Show this help
 	@grep -E '^[a-z][a-zA-Z0-9_-]+:.*##' $(MAKEFILE_LIST) | \

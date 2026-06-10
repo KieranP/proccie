@@ -11,7 +11,7 @@ Process manager that runs and supervises multiple processes. Similar to [overmin
 ## Install
 
 ```sh
-go install github.com/KieranP/proccie/cmd/proccie@latest
+cargo install --git https://github.com/KieranP/proccie
 ```
 
 Or build from source:
@@ -19,7 +19,7 @@ Or build from source:
 ```sh
 git clone https://github.com/KieranP/proccie.git
 cd proccie
-make install
+make install   # or: cargo install --path .
 ```
 
 ## Quick start
@@ -64,25 +64,28 @@ See [CONFIG.md](CONFIG.md) for full configuration reference.
 proccie [options] [command]
 
 Commands:
-  validate      check that the configuration file is valid
+  validate            check that the configuration file is valid
 
 Options:
-  -f string      path to the TOML config file (default "Procfile.toml")
-  -t duration    shutdown timeout before SIGKILL (default 10s)
-  -k duration    delay after force SIGKILL before hard exit (default 500ms)
-  -only string   comma-separated list of processes to run (with dependencies)
-  -except string comma-separated list of processes to exclude
-  -debug         show system log lines
-  -version       print version and exit
+  -f, --config <PATH>     path to the TOML config file (default "Procfile.toml")
+  -t, --timeout <DUR>     shutdown timeout before SIGKILL (default 10s)
+  -k, --force-delay <DUR> delay after force SIGKILL before hard exit (default 500ms)
+      --only <NAMES>      comma-separated list of processes to run (with dependencies)
+      --except <NAMES>    comma-separated list of processes to exclude
+      --debug             show system log lines
+  -h, --help              print help and exit
+  -V, --version           print version and exit
 ```
+
+Durations accept any [`humantime`](https://docs.rs/humantime) form (e.g. `10s`, `500ms`, `1m30s`).
 
 ## Shutdown behavior
 
 proccie uses a two-phase shutdown:
 
 1. **SIGTERM** -- on first `Ctrl-C` (or `SIGTERM`), proccie sends `SIGTERM` to every process group and waits for them to exit.
-2. **SIGKILL** -- if processes haven't exited after the timeout (default 10s, configurable with `-t`), proccie sends `SIGKILL`.
-3. **Force quit** -- sending a second `Ctrl-C` during shutdown immediately `SIGKILL`s all processes. After a brief delay (default 500ms, configurable with `-k`), proccie hard-exits.
+2. **SIGKILL** -- if processes haven't exited after the timeout (default 10s, configurable with `-t`/`--timeout`), proccie sends `SIGKILL`.
+3. **Force quit** -- sending a second `Ctrl-C` during shutdown immediately `SIGKILL`s all processes. After a brief delay (default 500ms, configurable with `-k`/`--force-delay`), proccie hard-exits.
 
 When a process exits with a code not in its `exit_codes` list (or has no `exit_codes` at all), proccie initiates a full shutdown and propagates that exit code as its own.
 

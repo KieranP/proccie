@@ -4,78 +4,57 @@ This guide covers how to build, test, and lint proccie locally.
 
 ## Prerequisites
 
-- **Go 1.25+** -- [https://go.dev/dl/](https://go.dev/dl/)
-- **golangci-lint** (for linting) -- install with:
-
-  ```sh
-  go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
-  ```
-
-  Or via Homebrew:
-
-  ```sh
-  brew install golangci-lint
-  ```
+- **Rust 1.95+** (stable) -- install via [rustup](https://rustup.rs/).
+  - `rustfmt` and `clippy` components: `rustup component add rustfmt clippy`
 
 ## Make targets
 
 Run `make` (or `make help`) to see all available targets:
 
-| Target    | Description                       |
-| --------- | --------------------------------- |
-| `build`   | Build the binary to `bin/proccie` |
-| `test`    | Run all tests                     |
-| `vet`     | Run `go vet`                      |
-| `lint`    | Run `golangci-lint`               |
-| `format`  | Format the code                   |
-| `check`   | Run vet, lint, and tests          |
-| `clean`   | Remove build artifacts            |
-| `install` | Install proccie to `GOPATH/bin`   |
-| `help`    | Show available targets            |
+| Target      | Description                              |
+| ----------- | ---------------------------------------- |
+| `build`     | Build the release binary                 |
+| `test`      | Run all tests                            |
+| `fmt`       | Format the code                          |
+| `fmt-check` | Check formatting without modifying files |
+| `clippy`    | Run clippy with warnings denied          |
+| `check`     | Run fmt-check, clippy, and tests         |
+| `clean`     | Remove build artifacts                   |
+| `install`   | Install proccie to `~/.cargo/bin`        |
+| `help`      | Show available targets                   |
 
-### Quick start
-
-```sh
-# Build the binary
-make build
-
-# Run all checks (vet + lint + tests)
-make check
-
-# Run tests
-make test
-
-# Run linting
-make lint
-```
-
-## Version injection
-
-The `Makefile` automatically derives a version string from git tags using:
-
-```
-git describe --tags --always --dirty
-```
-
-This produces output like `v1.0.0`, `v1.0.0-3-gabcdef`, or `v1.0.0-dirty` depending on the state of the working tree. The version is injected at build time via `-ldflags`:
+The same commands work directly through Cargo:
 
 ```sh
-go build -ldflags '-X main.version=v1.0.0' -o bin/proccie ./cmd/proccie
+cargo build --release           # build the binary
+cargo test                      # run unit + integration tests
+cargo clippy --all-targets      # lint
+cargo fmt                       # format
 ```
 
-If there are no tags or git is unavailable, the version defaults to `dev`.
+## Versioning
 
-To verify the version was injected:
+The reported version comes from `CARGO_PKG_VERSION` (the `version` field in
+`Cargo.toml`), surfaced via `clap`. Check it with:
 
 ```sh
-./bin/proccie -version
+proccie --version
 ```
 
 ## Project structure
 
 ```
-cmd/proccie/       CLI entrypoint
-internal/config/   TOML config parsing, validation, cycle detection
-internal/runner/   Process lifecycle, shutdown, readiness, retries
-internal/log/      Colored multiplexed log output
+src/main.rs            CLI entrypoint, argument parsing, signal handling
+src/lib.rs             library crate root
+src/config/            TOML parsing, validation, cycle detection, env resolution
+src/runner/            process lifecycle, shutdown, readiness, retries (Tokio)
+src/mux.rs             colored, multiplexed log output
+tests/                 integration tests (config, runner, mux, CLI)
 ```
+
+## Testing notes
+
+Tests live alongside the public API as integration tests under `tests/`.
+Runner tests use `#[tokio::test]` and drive real child processes
+(`sleep`, `echo`, `sh -c ...`), so they exercise the genuine
+process-group and signal behavior.

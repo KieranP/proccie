@@ -16,7 +16,7 @@ These keys are set at the top level of the TOML file (outside any process sectio
 | Key           | Type            | Default      | Description                                                                                                                                                                                    |
 | ------------- | --------------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `command`     | string          | _(required)_ | Shell command to run. Executed via `sh -c`.                                                                                                                                                    |
-| `exit_codes`  | int[]           | _(none)_     | Expected exit codes. If the process exits with one of these codes, it will not trigger a shutdown. Omit for long-running services that should never exit. Mutually exclusive with `readiness`. |
+| `exit_codes`  | int[]           | _(none)_     | Expected exit codes. If the process exits with one of these codes, it will not trigger a shutdown. Omit for long-running services that should never exit. Mutually exclusive with `readiness`. A process killed by a signal is reported with the shell convention code 128 + the signal number (e.g. `143` for SIGTERM), but a signal death never counts as an expected exit. |
 | `readiness`   | string or table | _(none)_     | Readiness check. See below. Mutually exclusive with `exit_codes`.                                                                                                                              |
 | `depends_on`  | string[]        | `[]`         | List of process names that must be ready before this one launches.                                                                                                                             |
 | `env_file`    | string          | _(none)_     | Path to a dotenv-style file. Variables from this file are applied to this process only. Overrides the global `env_file` but is overridden by inline `environment` entries.                     |
@@ -36,21 +36,25 @@ command   = "postgres -D /usr/local/var/postgres"
 readiness = "pg_isready -q"
 ```
 
-**Table form** -- explicit interval and timeout in seconds:
+**Table form** -- explicit interval and timeout:
 
 ```toml
 [web]
 command            = "bin/rails server -p 3000"
 readiness.command  = "curl -sf http://localhost:3000/health"
-readiness.interval = 2
+readiness.interval = "500ms"
 readiness.timeout  = 60
 ```
 
-| Table key  | Type   | Default      | Description                                             |
-| ---------- | ------ | ------------ | ------------------------------------------------------- |
-| `command`  | string | _(required)_ | Shell command to run as the readiness check.            |
-| `interval` | int    | `1`          | Seconds between readiness check attempts.               |
-| `timeout`  | int    | `30`         | Maximum seconds to wait for readiness before giving up. |
+| Table key  | Type            | Default      | Description                                          |
+| ---------- | --------------- | ------------ | ---------------------------------------------------- |
+| `command`  | string          | _(required)_ | Shell command to run as the readiness check.         |
+| `interval` | int or duration | `1`          | Time between readiness check attempts.               |
+| `timeout`  | int or duration | `30`         | Maximum time to wait for readiness before giving up. |
+
+Durations are either bare integer seconds (`2`) or a string in the same format as the CLI flags (`"500ms"`, `"1m 30s"`). A zero or negative `interval`/`timeout` is treated as "unset" and falls back to the default rather than being rejected.
+
+The readiness command runs with the process's resolved environment (the same merged variables the process itself sees), not proccie's own environment. If the timeout elapses before a check passes, proccie treats it as a startup failure: dependents do not start, and everything shuts down with a non-zero exit code.
 
 ## Dependency readiness
 
@@ -58,7 +62,7 @@ When a process has `depends_on`, its dependencies must be **ready** before it st
 
 1. **`exit_codes` (run-to-completion tasks)** -- The dependency is ready when it exits with one of the allowed exit codes. Use this for migrations, build steps, and other one-shot tasks.
 
-2. **`readiness` (long-running services with health checks)** -- The dependency is ready when the readiness command exits with code 0. The command is polled at the configured interval until it succeeds or the timeout elapses. If the timeout is reached, the dependent process will not start.
+2. **`readiness` (long-running services with health checks)** -- The dependency is ready when the readiness command exits with code 0. The command is polled at the configured interval until it succeeds or the timeout elapses. If the timeout is reached, the dependent process will not start and proccie shuts down with a non-zero exit code.
 
 3. **Neither (bare long-running services)** -- The dependency is ready immediately after it launches. This is the simplest mode, appropriate when no health check is needed and the process doesn't exit.
 
@@ -124,7 +128,7 @@ environment = { RAILS_ENV = "development", PORT = "3000" }
 
 ## Environment files
 
-The `env_file` key (both global and per-process) points to a dotenv-style file. Parsing is handled by [godotenv](https://github.com/joho/godotenv). Supported syntax:
+The `env_file` key (both global and per-process) points to a dotenv-style file. Parsing is handled by [dotenvy](https://github.com/allan2/dotenvy). Supported syntax:
 
 - `KEY=VALUE` (basic assignment)
 - `export KEY=VALUE` (shell-compatible; `export` prefix is stripped)
@@ -203,24 +207,25 @@ proccie [options] [command]
 
 ### Options
 
-| Flag       | Default         | Description                                                                                         |
-| ---------- | --------------- | --------------------------------------------------------------------------------------------------- |
-| `-f`       | `Procfile.toml` | Path to the TOML config file.                                                                       |
-| `-t`       | `10s`           | Shutdown timeout before SIGKILL.                                                                    |
-| `-k`       | `500ms`         | Delay after force SIGKILL before hard exit.                                                         |
-| `-only`    | _(none)_        | Comma-separated list of processes to run. Their transitive dependencies are included automatically. |
-| `-except`  | _(none)_        | Comma-separated list of processes to exclude.                                                       |
-| `-debug`   | `false`         | Show system log lines.                                                                              |
-| `-version` | `false`         | Print version and exit.                                                                             |
+| Flag                      | Default         | Description                                                                                         |
+| ------------------------- | --------------- | --------------------------------------------------------------------------------------------------- |
+| `-f`, `--config`          | `Procfile.toml` | Path to the TOML config file.                                                                       |
+| `-t`, `--timeout`         | `10s`           | Shutdown timeout before SIGKILL.                                                                    |
+| `-k`, `--force-delay`     | `500ms`         | Delay after force SIGKILL before hard exit.                                                         |
+| `--only`                  | _(none)_        | Comma-separated list of processes to run. Their transitive dependencies are included automatically. |
+| `--except`                | _(none)_        | Comma-separated list of processes to exclude.                                                       |
+| `--debug`                 | `false`         | Show system log lines.                                                                              |
+| `-h`, `--help`            | _(n/a)_         | Print help and exit.                                                                                |
+| `-V`, `--version`         | `false`         | Print version and exit.                                                                             |
 
-`-only` and `-except` are mutually exclusive. Process names in both flags must reference processes defined in the config file.
+Durations accept any [`humantime`](https://docs.rs/humantime) form (e.g. `10s`, `500ms`, `1m30s`). `--only` and `--except` are mutually exclusive. Process names in both flags must reference processes defined in the config file.
 
 ```sh
 # Run only the web process (plus any dependencies)
-proccie -only web
+proccie --only web
 
 # Run everything except the worker
-proccie -except worker
+proccie --except worker
 
 # Validate the config file
 proccie validate
