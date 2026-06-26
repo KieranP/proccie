@@ -6,12 +6,6 @@ use serde::de::{self, Deserializer, MapAccess, Visitor};
 
 use super::{DEFAULT_READINESS_INTERVAL, DEFAULT_READINESS_TIMEOUT};
 
-/// Parses a humantime duration (`"10s"`, `"500ms"`); shared by the CLI
-/// duration flags and TOML duration values so both render errors the same way.
-pub fn parse_duration(s: &str) -> Result<Duration, String> {
-    humantime::parse_duration(s).map_err(|e| format!("invalid duration {s:?}: {e}"))
-}
-
 /// Exit codes considered expected for a process; an empty set means any exit
 /// triggers shutdown. In TOML: an array of integers, e.g. `exit_codes = [0, 1]`.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -31,9 +25,8 @@ impl ExitCodes {
     }
 }
 
-/// A readiness check; dependents wait until its command exits 0. In TOML: a
-/// bare string, or a table with `command`/`interval`/`timeout` (integer
-/// seconds, or a duration string like `"500ms"`).
+/// A readiness check; dependents wait until its command exits 0. In TOML: a bare
+/// string, or a table with `command`/`interval`/`timeout`.
 #[derive(Debug, Clone)]
 pub struct Readiness {
     pub command: String,
@@ -57,10 +50,16 @@ impl Readiness {
     }
 }
 
-/// A readiness duration: bare integer seconds, or a humantime string like
-/// `"500ms"` (matching the CLI duration flags). Non-positive values mean
-/// "unset" (the default applies) rather than a parse error.
+/// A readiness duration: integer seconds, a positive float, or a humantime
+/// string like `"500ms"`. Zero means "unset" (the default applies); negative errors.
 struct DurationValue(Option<Duration>);
+
+impl DurationValue {
+    /// Wraps a duration, treating zero as "unset" so the configured default applies.
+    fn new(d: Duration) -> DurationValue {
+        DurationValue((!d.is_zero()).then_some(d))
+    }
+}
 
 impl<'de> Deserialize<'de> for DurationValue {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
@@ -74,33 +73,31 @@ impl<'de> Deserialize<'de> for DurationValue {
             }
 
             fn visit_i64<E: de::Error>(self, secs: i64) -> Result<DurationValue, E> {
-                Ok(DurationValue(
-                    (secs > 0).then(|| Duration::from_secs(secs as u64)),
-                ))
+                let secs = u64::try_from(secs).map_err(|_| {
+                    de::Error::custom(format!("duration must not be negative (got {secs})"))
+                })?;
+                Ok(DurationValue::new(Duration::from_secs(secs)))
             }
 
             fn visit_u64<E: de::Error>(self, secs: u64) -> Result<DurationValue, E> {
-                Ok(DurationValue((secs > 0).then(|| Duration::from_secs(secs))))
+                Ok(DurationValue::new(Duration::from_secs(secs)))
             }
 
             fn visit_str<E: de::Error>(self, s: &str) -> Result<DurationValue, E> {
                 parse_duration(s)
-                    .map(|d| DurationValue((!d.is_zero()).then_some(d)))
+                    .map(DurationValue::new)
                     .map_err(de::Error::custom)
             }
 
             fn visit_f64<E: de::Error>(self, secs: f64) -> Result<DurationValue, E> {
-                // Suggest the user's own value in parseable form when possible.
-                let hint = Duration::try_from_secs_f64(secs)
-                    .ok()
-                    .filter(|d| !d.is_zero())
-                    .map_or_else(
-                        || "\"500ms\"".to_owned(),
-                        |d| format!("\"{}\"", humantime::format_duration(d)),
-                    );
-                Err(de::Error::custom(format!(
-                    "fractional seconds are not supported; use a duration string like {hint}"
-                )))
+                if secs < 0.0 {
+                    return Err(de::Error::custom(format!(
+                        "duration must not be negative (got {secs})"
+                    )));
+                }
+                Duration::try_from_secs_f64(secs)
+                    .map(DurationValue::new)
+                    .map_err(|_| de::Error::custom(format!("invalid duration: {secs}")))
             }
         }
 
@@ -144,9 +141,12 @@ impl<'de> Deserialize<'de> for Readiness {
                         "command" => command = Some(map.next_value()?),
                         "interval" => interval = map.next_value::<DurationValue>()?.0,
                         "timeout" => timeout = map.next_value::<DurationValue>()?.0,
-                        // Ignore unknown keys, like the rest of the config.
+                        // Reject unknown keys so typos surface instead of being ignored.
                         _ => {
-                            map.next_value::<de::IgnoredAny>()?;
+                            return Err(de::Error::unknown_field(
+                                &key,
+                                &["command", "interval", "timeout"],
+                            ));
                         }
                     }
                 }
@@ -192,6 +192,7 @@ impl ReadyWhen<'_> {
 
 /// A single process entry from the TOML config.
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Process {
     /// Shell command to run (required). Executed via `sh -c`.
     #[serde(default)]
@@ -230,9 +231,18 @@ pub struct Process {
     #[serde(default)]
     pub max_retries: i64,
 
+    /// Optional display name for the TUI tab and log prefix; the service key
+    /// stays the canonical identifier. Falls back to the key when unset.
+    #[serde(default)]
+    pub name: Option<String>,
+
+    /// Optional prefix/tab color: a named ANSI color (`red`, `bright-green`,
+    /// …) or `#rrggbb` hex. Validated at load, parsed on demand by [`color`](Self::color).
+    #[serde(default)]
+    pub(super) color: Option<String>,
+
     /// The fully resolved environment, computed during
-    /// [`Config::load`](super::Config::load); not read from TOML. Private so
-    /// a `Process` with an unresolved environment can't leave this module.
+    /// [`Config::load`](super::Config::load); not from TOML. Private to this module.
     #[serde(skip)]
     pub(super) env: BTreeMap<String, String>,
 }
@@ -241,6 +251,17 @@ impl Process {
     /// Returns the fully resolved environment.
     pub fn env(&self) -> &BTreeMap<String, String> {
         &self.env
+    }
+
+    /// Returns the configured display name, or `key` when unset. The key
+    /// remains the canonical identifier; this is purely cosmetic.
+    pub fn display_name<'a>(&'a self, key: &'a str) -> &'a str {
+        self.name.as_deref().unwrap_or(key)
+    }
+
+    /// Returns the configured prefix/tab color, if any (parsed; validated at load).
+    pub fn color(&self) -> Option<anstyle::Color> {
+        self.color.as_deref().and_then(super::parse::parse_color)
     }
 
     /// Returns when this process releases its dependents; validation
@@ -254,4 +275,10 @@ impl Process {
             ReadyWhen::Launched
         }
     }
+}
+
+/// Parses a humantime duration (`"10s"`, `"500ms"`); shared by the CLI
+/// duration flags and TOML duration values so both render errors the same way.
+pub fn parse_duration(s: &str) -> Result<Duration, String> {
+    humantime::parse_duration(s).map_err(|e| format!("invalid duration {s:?}: {e}"))
 }

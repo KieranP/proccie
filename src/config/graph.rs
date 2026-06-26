@@ -1,10 +1,12 @@
 //! Dependency-graph traversal shared by validation, start ordering, and
 //! filtering: one DFS yields a deterministic topological order and detects
-//! cycles; [`reachable`] collects transitive dependencies.
+//! cycles; [`reachable`] collects transitive dependencies and [`dependents`]
+//! their reverse. All operate over a `name -> depends_on` adjacency map.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use super::types::Process;
+/// A `name -> depends_on` adjacency map.
+pub type Adjacency = BTreeMap<String, Vec<String>>;
 
 /// DFS node color for cycle detection.
 #[derive(Clone, Copy)]
@@ -16,33 +18,19 @@ enum Mark {
 }
 
 /// Returns the names forming a dependency cycle, if any.
-pub fn detect_cycle(processes: &BTreeMap<String, Process>) -> Option<Vec<String>> {
-    dfs(processes).err()
+pub fn detect_cycle(adj: &Adjacency) -> Option<Vec<String>> {
+    dfs(adj).err()
 }
 
 /// Returns process names in topological order (deps first, ties alphabetical).
-/// Callers must have rejected cycles already (validation does).
-pub fn topo_order(processes: &BTreeMap<String, Process>) -> Vec<String> {
-    dfs(processes).unwrap_or_else(|_| unreachable!("validated config has no cycles"))
-}
-
-/// One DFS over the dependency graph: the topological order, or the names
-/// forming a cycle. Unknown deps are skipped.
-fn dfs(processes: &BTreeMap<String, Process>) -> Result<Vec<String>, Vec<String>> {
-    let mut marks: HashMap<&str, Mark> = HashMap::with_capacity(processes.len());
-    let mut order = Vec::with_capacity(processes.len());
-
-    // BTreeMap keys are already sorted, giving a stable starting order.
-    for name in processes.keys() {
-        visit(name, processes, &mut marks, &mut Vec::new(), &mut order)?;
-    }
-
-    Ok(order)
+/// Validation rejects cycles; if one slips through, all names still return (order then arbitrary).
+pub fn topo_order(adj: &Adjacency) -> Vec<String> {
+    dfs(adj).unwrap_or_else(|_| adj.keys().cloned().collect())
 }
 
 /// Collects `start` and everything transitively reachable via `depends_on`.
 /// Unknown names are kept but contribute no edges.
-pub fn reachable(start: &[String], processes: &BTreeMap<String, Process>) -> HashSet<String> {
+pub fn reachable(start: &[String], adj: &Adjacency) -> HashSet<String> {
     let mut seen = HashSet::new();
     let mut stack: Vec<&str> = start.iter().map(String::as_str).collect();
 
@@ -50,17 +38,59 @@ pub fn reachable(start: &[String], processes: &BTreeMap<String, Process>) -> Has
         if !seen.insert(name.to_owned()) {
             continue;
         }
-        if let Some(proc) = processes.get(name) {
-            stack.extend(proc.depends_on.iter().map(String::as_str));
+        if let Some(deps) = adj.get(name) {
+            stack.extend(deps.iter().map(String::as_str));
         }
     }
 
     seen
 }
 
+/// Collects everything that transitively depends on any of `roots` (the reverse
+/// of [`reachable`]), excluding the roots themselves.
+pub fn dependents(roots: &[String], adj: &Adjacency) -> HashSet<String> {
+    // Reverse the edges once: dep -> names that depend on it.
+    let mut reverse: HashMap<&str, Vec<&str>> = HashMap::new();
+    for (name, deps) in adj {
+        for dep in deps {
+            reverse.entry(dep.as_str()).or_default().push(name.as_str());
+        }
+    }
+
+    let root_set: HashSet<&str> = roots.iter().map(String::as_str).collect();
+    let mut found = HashSet::new();
+    let mut stack: Vec<&str> = roots.iter().map(String::as_str).collect();
+
+    while let Some(name) = stack.pop() {
+        if let Some(deps) = reverse.get(name) {
+            for &dep in deps {
+                if !root_set.contains(dep) && found.insert(dep.to_owned()) {
+                    stack.push(dep);
+                }
+            }
+        }
+    }
+
+    found
+}
+
+/// One DFS over the dependency graph: the topological order, or the names
+/// forming a cycle. Unknown deps are skipped.
+fn dfs(adj: &Adjacency) -> Result<Vec<String>, Vec<String>> {
+    let mut marks: HashMap<&str, Mark> = HashMap::with_capacity(adj.len());
+    let mut order = Vec::with_capacity(adj.len());
+
+    // BTreeMap keys are already sorted, giving a stable starting order.
+    for name in adj.keys() {
+        visit(name, adj, &mut marks, &mut Vec::new(), &mut order)?;
+    }
+
+    Ok(order)
+}
+
 fn visit<'a>(
     name: &'a str,
-    processes: &'a BTreeMap<String, Process>,
+    adj: &'a Adjacency,
     marks: &mut HashMap<&'a str, Mark>,
     path: &mut Vec<&'a str>,
     order: &mut Vec<String>,
@@ -83,11 +113,11 @@ fn visit<'a>(
     marks.insert(name, Mark::Visiting);
     path.push(name);
 
-    if let Some(proc) = processes.get(name) {
-        let mut deps: Vec<&str> = proc.depends_on.iter().map(String::as_str).collect();
+    if let Some(deps) = adj.get(name) {
+        let mut deps: Vec<&str> = deps.iter().map(String::as_str).collect();
         deps.sort_unstable();
         for dep in deps {
-            visit(dep, processes, marks, path, order)?;
+            visit(dep, adj, marks, path, order)?;
         }
     }
 

@@ -11,16 +11,22 @@ use tempfile::TempDir;
 use proccie::config::Config;
 use proccie::runner::Runner;
 
-use proccie::mux::LogLevel;
+use proccie::logger::LogLevel;
 
-use common::{SharedBuf, build_mux, wait_for_output, write_config};
+use common::{SharedBuf, build_logger, build_services, wait_for_output, write_config};
 
 const TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Wraps a loaded config in a runner with test defaults, capturing its log output.
 fn build_runner(config: Config) -> (Runner, SharedBuf) {
-    let (mux, out) = build_mux(10, LogLevel::Debug);
-    let runner = Runner::new(Arc::new(config), mux, Duration::from_secs(2));
+    let (logger, out) = build_logger(&config.names(), LogLevel::Debug);
+    let services = build_services(&config, &logger);
+    let runner = Runner::new(
+        services,
+        config.adjacency(),
+        Arc::clone(logger.system()),
+        Duration::from_secs(2),
+    );
     (runner, out)
 }
 
@@ -225,6 +231,31 @@ async fn shutdown_escalates_to_sigkill_for_stubborn_processes() {
         "runner did not stop after SIGKILL escalation"
     );
     assert!(out.contents().contains("SIGKILL"), "{}", out.contents());
+}
+
+#[tokio::test]
+async fn signals_are_logged_on_the_target_service() {
+    // The signal sent to a service is logged on that service's own log (tagged
+    // with its name), not as a system message.
+    let (runner, out, _dir) = make_runner("[app]\ncommand = \"sleep 30\"\n");
+
+    let handle = run_in_background(&runner);
+    assert!(wait_for_output(&out, "starting app", TIMEOUT).await);
+
+    runner.shutdown();
+    assert!(wait_for_output(&out, "received SIGTERM", TIMEOUT).await);
+    let _ = tokio::time::timeout(TIMEOUT, handle).await;
+
+    let log = out.contents();
+    let line = log
+        .lines()
+        .find(|l| l.contains("received SIGTERM"))
+        .expect("a received-SIGTERM line");
+    assert!(line.contains("app"), "expected the service tag: {line}");
+    assert!(
+        !line.contains("system"),
+        "should not be a system log: {line}"
+    );
 }
 
 // --- dependency ordering ---
@@ -617,15 +648,34 @@ async fn process_output_is_copied_to_its_log_file() {
     let log = dir.path().join("app.log");
     let log_path = log.display().to_string();
 
+    // The program emits an ANSI color escape; the log-file copy must be plain.
     let (runner, _out, _cfg) = make_runner(&format!(
-        "[app]\ncommand = \"echo hello-log\"\nexit_codes = [0]\nlog_file = {log_path:?}\n"
+        "[app]\ncommand = \"printf '\\\\033[31mhello-log\\\\033[0m\\\\n'\"\nexit_codes = [0]\nlog_file = {log_path:?}\n"
     ));
     runner.run().await;
 
     let contents = std::fs::read_to_string(&log).expect("log file written");
     assert!(contents.contains("hello-log"), "{contents}");
-    // The log-file copy is plain text, without ANSI color codes.
+    // The log-file copy is plain text: the program's own ANSI codes are stripped.
     assert!(!contents.contains('\u{1b}'), "{contents}");
+}
+
+#[tokio::test]
+async fn unopenable_log_file_warns_but_still_runs() {
+    // Parent directory is missing, so opening the log file fails.
+    let dir = tempfile::tempdir().unwrap();
+    let bad_log = dir.path().join("missing").join("app.log");
+    let bad_log = bad_log.display().to_string();
+
+    let (runner, out, _cfg) = make_runner(&format!(
+        "[app]\ncommand = \"echo still-running\"\nexit_codes = [0]\nlog_file = {bad_log:?}\n"
+    ));
+    runner.run().await;
+
+    let logged = out.contents();
+    // The service runs despite the bad log path, and the failure is a warning.
+    assert!(logged.contains("still-running"), "{logged}");
+    assert!(logged.contains("cannot open log file"), "{logged}");
 }
 
 // --- filtering integrates with the runner ---
@@ -667,4 +717,129 @@ async fn filter_except_skips_the_excluded_subset() {
     let output = run_filtered(SUBSET_CONFIG, &[], &["worker"]).await;
     assert!(output.contains("web-ran"), "{output}");
     assert!(!output.contains("worker-ran"), "{output}");
+}
+
+// --- single-service shutdown (stop_service) ---
+
+#[tokio::test]
+async fn stop_service_stops_subtree_without_global_shutdown() {
+    // worker depends on web; db is independent. Stopping web must take down
+    // web + worker, leave db running, not taint the exit code, and emit the
+    // dependent note (an always-shown line, regardless of log level).
+    let (runner, out, _dir) = make_runner(
+        r#"
+[db]
+command = "echo db-up; sleep 30"
+
+[web]
+command = "echo web-up; sleep 30"
+
+[worker]
+command = "echo worker-up; sleep 30"
+depends_on = ["web"]
+"#,
+    );
+
+    let handle = run_in_background(&runner);
+    assert!(wait_for_output(&out, "worker-up", TIMEOUT).await);
+    assert!(out.contents().contains("db-up"), "{}", out.contents());
+
+    runner.stop_service("web");
+
+    // The dependent note explains the manual stop of the parent.
+    assert!(
+        wait_for_output(&out, "was manually shut down", Duration::from_secs(5)).await,
+        "{}",
+        out.contents()
+    );
+
+    // proccie keeps running because the independent db is still alive.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        !handle.is_finished(),
+        "runner exited despite db still running"
+    );
+
+    // A clean global shutdown afterwards; stopped services aren't failures.
+    runner.shutdown();
+    assert_eq!(handle.await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn stopping_a_readiness_service_is_not_a_timeout_failure() {
+    // A readiness-mode service that never passes is manually stopped before its
+    // window elapses. The stop settles the status first, so the run ends cleanly
+    // (code 0) rather than escalating the pending timeout into a run failure.
+    let (runner, out, _dir) = make_runner(
+        r#"
+[api]
+command            = "sleep 30"
+readiness.command  = "false"
+readiness.interval = 1
+readiness.timeout  = 30
+"#,
+    );
+
+    let handle = run_in_background(&runner);
+    assert!(wait_for_output(&out, "starting api", TIMEOUT).await);
+
+    runner.stop_service("api");
+    let code = tokio::time::timeout(TIMEOUT, handle)
+        .await
+        .expect("runner stops promptly")
+        .unwrap();
+
+    let output = out.contents();
+    assert!(!output.contains("timed out"), "{output}");
+    assert_eq!(code, 0, "{output}");
+}
+
+#[tokio::test]
+async fn stop_service_does_not_record_a_failure_code() {
+    // Stopping a lone service ends the run with code 0, not a kill code.
+    let (runner, out, _dir) = make_runner("[app]\ncommand = \"echo up; sleep 30\"\n");
+
+    let handle = run_in_background(&runner);
+    assert!(wait_for_output(&out, "up", TIMEOUT).await);
+
+    runner.stop_service("app");
+    assert_eq!(handle.await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn stopping_a_dependents_tab_escalates_to_sigkill() {
+    // Stopping the parent SIGTERMs the subtree {parent, child}; child ignores
+    // TERM. Stopping child's own tab must then force-kill it at once, not wait
+    // for the parent stop's scheduled SIGKILL escalation (2s, per `make_runner`).
+    let (runner, out, _dir) = make_runner(
+        r#"
+[parent]
+command = "echo parent-up; sleep 30"
+
+[child]
+command = "trap '' TERM; echo child-up; while true; do sleep 0.2; done"
+depends_on = ["parent"]
+"#,
+    );
+
+    let handle = run_in_background(&runner);
+    assert!(wait_for_output(&out, "child-up", TIMEOUT).await);
+
+    runner.stop_service("parent");
+    // Let the subtree SIGTERM land (child ignores it).
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    runner.stop_service("child");
+    // The escalation is immediate, well within the 2s scheduled SIGKILL.
+    let stopped = tokio::time::timeout(Duration::from_secs(1), handle).await;
+    assert!(
+        stopped.is_ok(),
+        "dependent was not force-killed promptly: {}",
+        out.contents()
+    );
+    assert!(
+        out.contents().contains("force-stopping child"),
+        "{}",
+        out.contents()
+    );
 }

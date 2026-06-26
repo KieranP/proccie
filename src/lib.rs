@@ -2,5 +2,8 @@
 //! processes with dependency ordering, readiness, retries, and graceful shutdown.
 
 pub mod config;
-pub mod mux;
+pub mod logger;
 pub mod runner;
+pub mod service;
+mod sync;
+pub mod tui;

@@ -89,6 +89,11 @@ pub enum ValidationIssueKind {
     #[error("readiness command cannot be empty")]
     EmptyReadinessCommand,
 
+    #[error(
+        "\"max_retries\" has no effect with \"readiness\" (retries fire on exit, not a failed readiness check)"
+    )]
+    RetriesWithReadiness,
+
     #[error("duplicate dependency {0:?}")]
     DuplicateDependency(String),
 
@@ -100,6 +105,12 @@ pub enum ValidationIssueKind {
 
     #[error("max_retries must be non-negative")]
     NegativeMaxRetries,
+
+    #[error("invalid color {0:?} (expected a named ANSI color or #rrggbb hex)")]
+    InvalidColor(String),
+
+    #[error("display name {0:?} is already used by another process")]
+    DuplicateName(String),
 }
 
 /// Indents each issue onto its own line for the `Validation` message.

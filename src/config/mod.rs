@@ -13,6 +13,8 @@ use std::path::Path;
 use std::time::Duration;
 
 pub use error::{ConfigError, ConfigWarning, ValidationIssue, ValidationIssueKind};
+pub use graph::{Adjacency, dependents, reachable, topo_order};
+pub use parse::parse_color;
 pub use types::{ExitCodes, Process, Readiness, ReadyWhen, parse_duration};
 
 /// Maximum time to wait for a readiness command to succeed before
@@ -53,9 +55,16 @@ impl Config {
 
         let parsed = parse::parse(&data, path)?;
         validate::validate(&parsed.processes)?;
-        let processes = environment::resolve(parsed, base_env)?;
+        // Relative `env_file` paths resolve against the config file's directory.
+        let config_dir = path.parent().unwrap_or_else(|| Path::new(""));
+        let processes = environment::resolve(parsed, base_env, config_dir)?;
 
         Ok(Config { processes })
+    }
+
+    /// Builds the `name -> depends_on` adjacency map for graph traversal.
+    pub fn adjacency(&self) -> Adjacency {
+        adjacency_of(&self.processes)
     }
 
     /// Returns the processes, keyed by name in alphabetical order.
@@ -88,15 +97,17 @@ impl Config {
         self.processes.keys().map(String::as_str).collect()
     }
 
-    /// Returns process names in deterministic topological order (dependencies
-    /// first; ties alphabetical), derived on demand so filtering can't stale it.
-    pub fn start_order(&self) -> Vec<String> {
-        // Load-time validation rejects cycles, and filtering only removes.
-        graph::topo_order(&self.processes)
+    /// The display name (the `name` override, else the key) for each process, in
+    /// alphabetical key order. Sizes the log prefix width and the tab labels.
+    pub fn display_names(&self) -> Vec<String> {
+        self.processes
+            .iter()
+            .map(|(key, proc)| proc.display_name(key).to_owned())
+            .collect()
     }
 
     /// Restricts the config: `only` keeps the named processes and their deps;
-    /// `except` drops them and prunes dangling deps. Both, or unknown names, error.
+    /// `except` drops them and everything that depends on them. Both, or unknown names, error.
     pub fn filter(&mut self, only: &[String], except: &[String]) -> Result<(), ConfigError> {
         if !only.is_empty() && !except.is_empty() {
             return Err(ConfigError::OnlyAndExcept);
@@ -110,26 +121,25 @@ impl Config {
         }
 
         if !only.is_empty() {
-            let keep = graph::reachable(only, &self.processes);
+            let keep = graph::reachable(only, &self.adjacency());
             self.processes.retain(|name, _| keep.contains(name));
         }
 
         if !except.is_empty() {
-            for name in except {
-                self.processes.remove(name);
-            }
-            self.prune_dangling_deps();
+            // Drop the named processes and everything that transitively depends on them.
+            let mut drop = graph::dependents(except, &self.adjacency());
+            drop.extend(except.iter().cloned());
+            self.processes.retain(|name, _| !drop.contains(name));
         }
 
         Ok(())
     }
+}
 
-    /// Drops `depends_on` entries that reference processes no longer
-    /// present, so the runner never waits on a process that can't start.
-    fn prune_dangling_deps(&mut self) {
-        let present: HashSet<String> = self.processes.keys().cloned().collect();
-        for proc in self.processes.values_mut() {
-            proc.depends_on.retain(|dep| present.contains(dep));
-        }
-    }
+/// Builds a `name -> depends_on` adjacency map from a process table.
+pub(crate) fn adjacency_of(procs: &BTreeMap<String, Process>) -> Adjacency {
+    procs
+        .iter()
+        .map(|(name, proc)| (name.clone(), proc.depends_on.clone()))
+        .collect()
 }

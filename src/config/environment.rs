@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use super::error::ConfigError;
 use super::parse::Parsed;
@@ -17,6 +18,7 @@ pub fn os_env() -> BTreeMap<String, String> {
 pub fn resolve(
     parsed: Parsed,
     base_env: BTreeMap<String, String>,
+    config_dir: &Path,
 ) -> Result<BTreeMap<String, Process>, ConfigError> {
     // Shared base layers, built once.
     let mut base = base_env;
@@ -25,6 +27,7 @@ pub fn resolve(
         &parsed.global_env_file,
         &parsed.global_env,
         "top-level".to_owned(),
+        config_dir,
     )?;
 
     let mut processes = parsed.processes;
@@ -35,6 +38,7 @@ pub fn resolve(
             &proc.env_file,
             &proc.environment,
             format!("process {name:?}"),
+            config_dir,
         )?;
         proc.env = env;
     }
@@ -49,9 +53,13 @@ fn apply_layer(
     env_file: &Option<String>,
     environment: &BTreeMap<String, String>,
     scope: String,
+    config_dir: &Path,
 ) -> Result<(), ConfigError> {
     if let Some(path) = non_empty(env_file) {
-        env.extend(read_env_file(path).map_err(|source| ConfigError::EnvFile { scope, source })?);
+        env.extend(
+            read_env_file(path, config_dir)
+                .map_err(|source| ConfigError::EnvFile { scope, source })?,
+        );
     }
     env.extend(environment.iter().map(|(k, v)| (k.clone(), v.clone())));
     Ok(())
@@ -65,6 +73,10 @@ fn non_empty(path: &Option<String>) -> Option<&str> {
 
 /// Reads a dotenv-style file into a map without mutating the process
 /// environment. Variable interpolation is handled by `dotenvy`.
-fn read_env_file(path: &str) -> Result<BTreeMap<String, String>, dotenvy::Error> {
-    dotenvy::from_path_iter(path)?.collect()
+fn read_env_file(
+    path: &str,
+    config_dir: &Path,
+) -> Result<BTreeMap<String, String>, dotenvy::Error> {
+    // A relative path resolves against the config file's directory, not the CWD.
+    dotenvy::from_path_iter(config_dir.join(path))?.collect()
 }

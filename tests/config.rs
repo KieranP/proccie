@@ -4,6 +4,7 @@
 mod common;
 
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use proccie::config::{Config, DEFAULT_READINESS_INTERVAL, DEFAULT_READINESS_TIMEOUT, ExitCodes};
 
@@ -117,6 +118,20 @@ command = "npm start"
 }
 
 #[test]
+fn rejects_unknown_process_key() {
+    // A typo'd process key (here `exit_code` for `exit_codes`) must error
+    // rather than silently misconfigure the process.
+    let err = load_err(
+        r#"
+[web]
+command   = "npm start"
+exit_code = [0]
+"#,
+    );
+    assert!(err.contains("exit_code"), "{err}");
+}
+
+#[test]
 fn parses_log_file_option() {
     let cfg = load(
         r#"
@@ -176,15 +191,14 @@ readiness.timeout  = 10
 }
 
 #[test]
-fn readiness_non_positive_interval_and_timeout_fall_back_to_defaults() {
-    // Config integers are signed, so a non-positive interval/timeout is a
-    // valid request for the default rather than a parse error.
+fn readiness_zero_interval_and_timeout_fall_back_to_defaults() {
+    // Zero is a valid request for the default rather than a parse error.
     let cfg = load(
         r#"
 [web]
 command            = "npm start"
 readiness.command  = "curl -sf http://localhost:3000/health"
-readiness.interval = -1
+readiness.interval = 0
 readiness.timeout  = 0
 "#,
     );
@@ -197,8 +211,21 @@ readiness.timeout  = 0
 }
 
 #[test]
-fn fractional_readiness_duration_suggests_a_duration_string() {
+fn readiness_negative_duration_is_rejected() {
     let err = load_err(
+        r#"
+[web]
+command            = "npm start"
+readiness.command  = "curl -sf http://localhost:3000/health"
+readiness.interval = -1
+"#,
+    );
+    assert!(err.contains("negative"), "{err}");
+}
+
+#[test]
+fn fractional_readiness_duration_is_accepted() {
+    let cfg = load(
         r#"
 [web]
 command            = "npm start"
@@ -206,7 +233,11 @@ readiness.command  = "curl -sf http://localhost:3000/health"
 readiness.interval = 2.5
 "#,
     );
-    assert!(err.contains("duration string like \"2s 500ms\""), "{err}");
+    let r = cfg.processes()["web"]
+        .readiness
+        .as_ref()
+        .expect("readiness");
+    assert_eq!(r.interval_or_default(), Duration::from_millis(2500));
 }
 
 #[test]
@@ -222,9 +253,9 @@ readiness.interval = 2
 }
 
 #[test]
-fn readiness_table_ignores_unknown_keys() {
-    // Extra keys are tolerated, consistent with the rest of the config.
-    let cfg = load(
+fn readiness_table_rejects_unknown_keys() {
+    // A typo'd key must surface as an error, not be silently ignored.
+    let err = load_err(
         r#"
 [web]
 command           = "npm start"
@@ -232,14 +263,7 @@ readiness.command = "curl -sf http://localhost:3000/health"
 readiness.retries = 3
 "#,
     );
-    assert_eq!(
-        cfg.processes()["web"]
-            .readiness
-            .as_ref()
-            .expect("readiness")
-            .command,
-        "curl -sf http://localhost:3000/health"
-    );
+    assert!(err.contains("retries"), "{err}");
 }
 
 #[test]
@@ -273,6 +297,26 @@ fn rejects_undefined_dependency() {
 fn rejects_self_dependency() {
     let err = load_err("[web]\ncommand = \"npm start\"\ndepends_on = [\"web\"]\n");
     assert!(err.contains("cannot depend on itself"), "{err}");
+}
+
+#[test]
+fn rejects_duplicate_display_name() {
+    let err = load_err(
+        "[web1]\ncommand = \"true\"\nname = \"Web\"\n[web2]\ncommand = \"true\"\nname = \"Web\"\n",
+    );
+    assert!(
+        err.contains("display name \"Web\" is already used"),
+        "{err}"
+    );
+}
+
+#[test]
+fn rejects_name_colliding_with_another_key() {
+    let err = load_err("[web]\ncommand = \"true\"\nname = \"api\"\n[api]\ncommand = \"true\"\n");
+    assert!(
+        err.contains("display name \"api\" is already used"),
+        "{err}"
+    );
 }
 
 #[test]
@@ -368,6 +412,37 @@ fn max_retries_defaults_to_zero() {
     assert_eq!(cfg.processes()["web"].max_retries, 0);
 }
 
+#[test]
+fn rejects_retries_with_readiness() {
+    // Retries fire on exit, not a failed readiness window, so the combination is
+    // rejected rather than silently ignoring max_retries.
+    let err = load_err(
+        r#"
+[web]
+command     = "npm start"
+readiness   = "curl -sf http://localhost:3000/health"
+max_retries = 3
+"#,
+    );
+    assert!(
+        err.contains("\"max_retries\" has no effect with \"readiness\""),
+        "{err}"
+    );
+}
+
+#[test]
+fn readiness_with_default_retries_is_allowed() {
+    // The default (0 retries) does not conflict with readiness.
+    let cfg = load(
+        r#"
+[web]
+command   = "npm start"
+readiness = "curl -sf http://localhost:3000/health"
+"#,
+    );
+    assert!(cfg.processes()["web"].readiness.is_some());
+}
+
 // --- exit codes helper ---
 
 #[test]
@@ -398,7 +473,7 @@ depends_on = ["db", "migrate"]
 "#,
     );
 
-    let order = cfg.start_order();
+    let order = proccie::config::topo_order(&cfg.adjacency());
     let pos = |name: &str| order.iter().position(|n| n == name).unwrap();
     assert!(pos("db") < pos("migrate"));
     assert!(pos("migrate") < pos("web"));
@@ -418,7 +493,10 @@ command = "echo alpha"
 command = "echo middle"
 "#,
     );
-    assert_eq!(cfg.start_order(), ["alpha", "middle", "zebra"]);
+    assert_eq!(
+        proccie::config::topo_order(&cfg.adjacency()),
+        ["alpha", "middle", "zebra"]
+    );
 }
 
 #[test]
@@ -471,7 +549,7 @@ fn filter_except_removes_named_processes() {
 }
 
 #[test]
-fn filter_except_prunes_dangling_deps() {
+fn filter_except_cascades_to_dependents() {
     let mut cfg = load(
         r#"
 [db]
@@ -480,11 +558,19 @@ command = "postgres"
 [web]
 command = "npm start"
 depends_on = ["db"]
+
+[worker]
+command = "run worker"
+depends_on = ["web"]
+
+[lonely]
+command = "idle"
 "#,
     );
+    // Excluding `db` also excludes `web` and `worker` (its transitive dependents),
+    // so nothing is left running without a dependency it was wired to need.
     cfg.filter(&[], &["db".into()]).unwrap();
-    assert_eq!(cfg.names(), ["web"]);
-    assert!(cfg.processes()["web"].depends_on.is_empty());
+    assert_eq!(cfg.names(), ["lonely"]);
 }
 
 #[test]
@@ -584,6 +670,25 @@ fn base_env_is_inherited_and_overridden_by_every_config_layer() {
 }
 
 #[test]
+fn relative_env_file_resolves_against_the_config_directory() {
+    // A relative env_file must be found next to the Procfile, not in the CWD.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join(".env"), "FROM_REL=yes\n").unwrap();
+    let cfg_path = dir.path().join("Procfile.toml");
+    std::fs::write(
+        &cfg_path,
+        "env_file = \".env\"\n\n[web]\ncommand = \"npm start\"\n",
+    )
+    .unwrap();
+
+    let cfg = Config::load(&cfg_path).unwrap();
+    assert_eq!(
+        env_of(&cfg, "web").get("FROM_REL").map(String::as_str),
+        Some("yes")
+    );
+}
+
+#[test]
 fn empty_env_file_is_treated_as_unset() {
     // An explicit empty path must be ignored, not read as a missing file.
     let cfg = load(
@@ -672,4 +777,75 @@ fn rejects_non_string_top_level_env_settings() {
         load_err("[environment]\nGOOD=\"ok\"\nBAD=42\n[web]\ncommand=\"x\"\n")
             .contains("must be a string")
     );
+}
+
+// --- display name & color ---
+
+#[test]
+fn display_name_falls_back_to_key() {
+    let cfg = load("[web]\ncommand = \"x\"\n");
+    let web = &cfg.processes()["web"];
+    assert_eq!(web.display_name("web"), "web");
+    assert!(web.color().is_none());
+}
+
+#[test]
+fn configured_name_and_named_color_resolve() {
+    let cfg = load("[web]\ncommand = \"x\"\nname = \"Web Server\"\ncolor = \"bright-green\"\n");
+    let web = &cfg.processes()["web"];
+    assert_eq!(web.display_name("web"), "Web Server");
+    assert_eq!(web.color(), Some(anstyle::AnsiColor::BrightGreen.into()));
+}
+
+#[test]
+fn hex_color_resolves_to_rgb() {
+    let cfg = load("[web]\ncommand = \"x\"\ncolor = \"#ff8800\"\n");
+    let web = &cfg.processes()["web"];
+    assert_eq!(
+        web.color(),
+        Some(anstyle::Color::Rgb(anstyle::RgbColor(0xff, 0x88, 0x00)))
+    );
+}
+
+#[test]
+fn invalid_color_is_rejected() {
+    let err = load_err("[web]\ncommand = \"x\"\ncolor = \"chartreuse\"\n");
+    assert!(err.contains("invalid color"), "{err}");
+    let err = load_err("[web]\ncommand = \"x\"\ncolor = \"#zzzzzz\"\n");
+    assert!(err.contains("invalid color"), "{err}");
+    // A 6-byte multi-byte value must be rejected, not panic on a char boundary.
+    let err = load_err("[web]\ncommand = \"x\"\ncolor = \"#héllo\"\n");
+    assert!(err.contains("invalid color"), "{err}");
+}
+
+// --- dependency graph: reverse traversal ---
+
+#[test]
+fn dependents_collects_transitive_chain() {
+    // db <- api <- web, and a standalone cache; stopping db hits api and web.
+    let cfg = load(
+        r#"
+[db]
+command = "x"
+[api]
+command = "x"
+depends_on = ["db"]
+[web]
+command = "x"
+depends_on = ["api"]
+[cache]
+command = "x"
+"#,
+    );
+    let adj = cfg.adjacency();
+    let mut deps: Vec<String> = proccie::config::dependents(&["db".to_owned()], &adj)
+        .into_iter()
+        .collect();
+    deps.sort();
+    assert_eq!(deps, vec!["api".to_owned(), "web".to_owned()]);
+
+    // A leaf with no dependents yields an empty set.
+    assert!(proccie::config::dependents(&["web".to_owned()], &adj).is_empty());
+    // cache is independent.
+    assert!(proccie::config::dependents(&["cache".to_owned()], &adj).is_empty());
 }

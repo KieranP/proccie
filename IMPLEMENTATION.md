@@ -2,66 +2,95 @@
 
 proccie is an async Rust application built on [Tokio](https://tokio.rs/).
 
+## Architecture
+
+Domain layers that depend downward only:
+
+- **`config`** — parses/validates the TOML, detects cycles, and resolves each
+  process's environment into a `Config` of `Process` entries.
+- **`logger`** — UI-agnostic logging: per-tag `TaggedWriter`s over an ANSI
+  stream or an in-memory `LogStore`, plus a color palette.
+- **`service`** — the per-service object (`Service`): config, identity, color,
+  lifecycle `ServiceStatus`, and its own writer/store. Runner and TUI both work
+  in terms of `Service`.
+- **`runner`** — orchestration (`mod`), per-process execution (`lifecycle`),
+  readiness polling (`readiness`), and dependency signalling (`deps`).
+- **`tui`** — ratatui terminal UI: tab state (`app`), rendering (`ui`), and the
+  event loop (`mod`).
+
 ## Startup
 
-`main` parses CLI flags with `clap`, calls `Config::load` to read and
-validate the TOML file and resolve each process's environment, applies
-`--only`/`--except` filtering, then constructs a `Runner` and awaits
-`Runner::run`.
+`main` parses CLI flags, loads and validates the config (resolving
+environments), applies `--only`/`--except`, builds the `Logger` and `Service`s,
+then constructs a `Runner`. The TUI drives output when stdout is a TTY (unless
+`--no-tui`); otherwise lines stream as plain prefixed text.
 
 ## Process launch
 
-`Runner::run` spawns one Tokio task per process (a `JoinSet`). Each task
-first awaits its dependencies, then runs `sh -c <command>` in its own
-process group (`Command::process_group(0)`), so the whole child tree can be
-signaled together.
+`Runner::run` spawns one Tokio task per process in a `JoinSet`. Each awaits its
+dependencies, then runs `sh -c <command>` in its own process group so the whole
+child tree can be signalled together. Stdin is `/dev/null` (so a child can't
+detect a TTY and hang on shutdown); stdout and stderr share one pipe to keep
+interleaved lines in write order.
 
 ## Dependency readiness
 
 Each process owns a [`watch`](https://docs.rs/tokio/latest/tokio/sync/watch/)
-channel carrying a `DepState` (`Pending` → `Ready`/`Failed`). Dependents
-await the channel; the first terminal state wins and wakes all waiters.
+channel carrying a `DepState` (`Pending` → `Ready`/`Failed`); the first terminal
+state wins and wakes all waiters. A process becomes ready:
 
-- **Bare** -- ready on launch.
-- **`exit_codes`** -- ready when the process exits with an allowed code.
-- **`readiness`** -- ready when the readiness command exits 0 (run with the
-  process's environment and polled at the configured interval; the timeout
-  window opens at the first successful launch). Checks pause while no live
-  child exists, and a pass only counts for the child incarnation it probed
-  (each attempt's child is marked live under its attempt number), so a
-  stale pass between retries can't release dependents.
+- **bare** — on launch;
+- **`exit_codes`** — when it exits with an allowed code;
+- **`readiness`** — when the readiness command exits 0 (polled at the interval,
+  the timeout window opening at first launch). Checks pause while no child is
+  live, and a pass counts only for the child it probed, so a stale pass between
+  retries can't release dependents. A timeout fails the run unless the service
+  was manually stopped.
 
 `exit_codes` and `readiness` are mutually exclusive.
 
 ## Retries
 
-Up to `1 + max_retries` attempts per process. Exhausting the retries
-triggers a shutdown.
+Up to `1 + max_retries` attempts per process. An unexpected exit — a failure or
+an unconfigured clean (code-0) exit — is retried while attempts remain; once
+exhausted, a failure shuts down with that code and a clean exit ends the run.
+Retries fire on *exit*, so they are rejected alongside `readiness` (which fails
+via its own timeout and never re-launches).
+
+## Output draining
+
+After a child exits, output is drained until the pump goes idle for
+`OUTPUT_DRAIN_GRACE` (a lingering grandchild holding the pipe open) or hits the
+absolute `OUTPUT_DRAIN_MAX` cap, so a grandchild that keeps writing can't hang
+the run.
 
 ## Shutdown
 
-A `CancellationToken` coordinates cancellation of dependency waits and
-readiness polling.
+A `CancellationToken` cancels dependency waits and readiness polling; signals go
+to process groups (`killpg`) so child trees are included.
 
-- **First SIGINT/SIGTERM** -- cancel the token, `SIGTERM` every process
-  group, then escalate to `SIGKILL` after `--timeout`.
-- **Second signal** -- `SIGKILL` immediately, then `exit(1)` after
+- **OS signals** (`kill`, or Ctrl+C under `--no-tui`) — the first SIGINT/SIGTERM
+  requests termination, `SIGTERM`s every group, and escalates to `SIGKILL` after
+  `--timeout`; a second signal `SIGKILL`s at once and `exit(1)`s after
   `--force-delay`.
+- **In the TUI** (raw mode, so Ctrl+C is a keystroke) — Ctrl+C on the All tab
+  stops every service (`SIGKILL` on a repeat); on a service tab it stops just
+  that subtree; once nothing is running it quits. `q` stops everything then
+  exits once all services are down.
 
-Signals are delivered to process groups (`killpg`) so child trees are
-included.
+A finished run stays open for log review; quitting is always explicit.
 
 ## Logging
 
-`mux::Mux` serializes output through a mutex. Each process gets a
-`PrefixWriter` that line-buffers and prefixes output with a color-coded
-name. An optional per-process log file receives the same lines without ANSI
-codes. A 1 MiB overflow guard force-flushes output that never sees a
-newline.
+Each service's `TaggedWriter` prefixes lines with its color-coded name and sends
+them to an ANSI stream (`--no-tui`) or its own `LogStore` (the TUI merges every
+service store plus a system store for the All view). Output is line-buffered
+with an overflow guard for a line that never ends. An optional per-process log
+file (mode `0o600`) receives the same lines, plain and ANSI-stripped.
+Diagnostics use leveled logging (`--log-level`).
 
 ## Exit code
 
-The first unexpected non-zero exit from any process becomes proccie's exit
-code; a clean run returns 0. A process that fails to spawn fails the run
-with exit code 1, even when `exit_codes` is configured (the Go
-implementation exited 0 in that case).
+The first unexpected non-zero exit becomes proccie's exit code; a clean run
+returns 0. A process that fails to spawn fails the run with code 1, even when
+`exit_codes` is configured.

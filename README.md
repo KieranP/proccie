@@ -5,8 +5,9 @@ Process manager that runs and supervises multiple processes. Similar to [overmin
 - Process Dependencies (e.g. a frontend may depend on the backend starting first)
 - Readiness Checks (when to consider a process "started", with configurable interval/timeout)
 - Fine-grained control over expected exit codes (e.g. migrations should exit with 0, but not 1)
+- Automatic retries on failure (configurable per process via `max_retries`)
 - Global/per-process environment variables (either defined inline or imported from file path)
-- Save STDOUT/STDERR to separate log files per process
+- Save STDOUT/STDERR to separate log files per process (ANSI color codes stripped)
 
 ## Install
 

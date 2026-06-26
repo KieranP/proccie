@@ -7,11 +7,13 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use proccie::mux::{LogLevel, Mux};
+use proccie::config::Config;
+use proccie::logger::{Destination, LogLevel, Logger};
+use proccie::service::Service;
 use tempfile::TempDir;
 
 /// An in-memory writer that can be cloned to share one buffer between a
-/// [`Mux`](proccie::mux::Mux) and the test that inspects its output.
+/// [`Logger`](proccie::logger::Logger) and the test that inspects its output.
 #[derive(Clone, Default)]
 pub struct SharedBuf(Arc<Mutex<Vec<u8>>>);
 
@@ -45,11 +47,22 @@ impl Write for SharedBuf {
     }
 }
 
-/// Builds a `Mux` at `level` that captures its output in the returned [`SharedBuf`].
-pub fn build_mux(pad_width: usize, level: LogLevel) -> (Arc<Mux>, SharedBuf) {
+/// Builds a `Logger` at `level` (pad width sized to `labels`) that captures its
+/// output in the returned [`SharedBuf`].
+pub fn build_logger(labels: &[&str], level: LogLevel) -> (Arc<Logger>, SharedBuf) {
     let out = SharedBuf::new();
-    let mux = Mux::new(out.clone(), pad_width, level);
-    (mux, out)
+    // Writer (not Stream) so the raw ANSI passes through for assertions.
+    let logger = Logger::new(
+        Destination::Writer(Box::new(out.clone())),
+        labels.iter().copied(),
+        level,
+    );
+    (logger, out)
+}
+
+/// Builds the services for `config`, logging via `logger`.
+pub fn build_services(config: &Config, logger: &Logger) -> Arc<[Service]> {
+    Service::build_all(config, &config.adjacency(), logger).expect("build services")
 }
 
 /// Writes `content` to a `Procfile.toml` inside a fresh temp directory and

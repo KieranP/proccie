@@ -44,12 +44,15 @@ proccie --version
 ## Project structure
 
 ```
-src/main.rs            CLI entrypoint, argument parsing, signal handling
+src/main.rs            CLI entrypoint, TTY/TUI mode selection, signal handling
 src/lib.rs             library crate root
-src/config/            TOML parsing, validation, cycle detection, env resolution
-src/runner/            process lifecycle, shutdown, readiness, retries (Tokio)
-src/mux.rs             colored, multiplexed log output
-tests/                 integration tests (config, runner, mux, CLI)
+src/sync.rs            poison-recovering mutex helper (MutexExt)
+src/config/            TOML parsing, validation, cycle/dependents graph, env resolution
+src/logger/            UI-agnostic logging: per-tag writers over a stream or LogStore
+src/service/           per-service object (key, config, color, status, own log store)
+src/runner/            orchestrator (mod) + per-process lifecycle, readiness, deps
+src/tui/               ratatui terminal UI (app state, rendering, event loop)
+tests/                 integration tests (config, logging, router, runner, tui, CLI)
 ```
 
 ## Testing notes

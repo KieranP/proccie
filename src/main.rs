@@ -1,5 +1,6 @@
 //! Command-line entry point for proccie.
 
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -8,8 +9,10 @@ use clap::{Parser, Subcommand};
 use tokio::signal::unix::{Signal, SignalKind, signal};
 
 use proccie::config::{Config, parse_duration};
-use proccie::mux::{LogLevel, Mux};
+use proccie::logger::{Destination, LogLevel, Logger, TaggedWriter};
 use proccie::runner::Runner;
+use proccie::service::Service;
+use proccie::tui;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -34,13 +37,17 @@ struct Cli {
     #[arg(long, value_delimiter = ',')]
     only: Vec<String>,
 
-    /// Processes to exclude (repeatable or comma-separated).
+    /// Processes to exclude, with anything that depends on them (repeatable or comma-separated).
     #[arg(long, value_delimiter = ',')]
     except: Vec<String>,
 
     /// Minimum severity to log: `debug`, `info`, `warn`, or `error`.
-    #[arg(long = "log-level", default_value = "info", value_parser = parse_log_level)]
+    #[arg(long = "log-level", default_value = "info")]
     log_level: LogLevel,
+
+    /// Disable the interactive TUI and stream plain prefixed output instead.
+    #[arg(long = "no-tui")]
+    no_tui: bool,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -70,39 +77,45 @@ async fn run() -> i32 {
     };
     warn_all(&config);
 
-    // Strip ANSI styling automatically when stdout isn't a terminal.
-    let stdout = anstream::AutoStream::auto(std::io::stdout());
-    let width = Mux::prefix_width(config.names());
-    let mux = Mux::new(stdout, width, cli.log_level);
-    let count = config.processes().len();
-    let runner = Runner::new(Arc::new(config), Arc::clone(&mux), cli.timeout);
+    // The TUI launches when stdout is a TTY, unless `--no-tui` forces plain mode.
+    let use_tui = std::io::stdout().is_terminal() && !cli.no_tui;
+    let logger = build_logger(&config, &cli, use_tui);
 
-    spawn_signal_handler(runner.clone(), Arc::clone(&mux), cli.force_delay);
+    // Built once, then shared: color resolution borrows it, the runner owns it.
+    let adjacency = config.adjacency();
+    let services = match Service::build_all(&config, &adjacency, &logger) {
+        Ok(services) => services,
+        Err(e) => return fail(&e),
+    };
 
-    mux.info(format!(
-        "proccie {VERSION} starting with {count} process(es)"
+    let runner = Runner::new(
+        Arc::clone(&services),
+        adjacency,
+        Arc::clone(logger.system()),
+        cli.timeout,
+    );
+
+    spawn_signal_handler(
+        runner.clone(),
+        Arc::clone(logger.system()),
+        cli.force_delay,
+        use_tui,
+    );
+
+    logger.system().info(format!(
+        "proccie {VERSION} starting with {} process(es)",
+        config.processes().len()
     ));
-    let code = runner.run().await;
-    mux.info(format!("proccie exiting (code {code})"));
+
+    let code = match supervise(&services, &runner, &logger, use_tui, cli.force_delay).await {
+        Ok(code) => code,
+        Err(e) => return fail(&e),
+    };
+
+    logger
+        .system()
+        .info(format!("proccie exiting (code {code})"));
     code
-}
-
-/// Loads the config and applies CLI filters, returning the runnable process
-/// set or the exit code to fail with.
-fn load_runnable_config(cli: &Cli) -> Result<Config, i32> {
-    let mut config = Config::load(&cli.config).map_err(|e| fail(&e))?;
-    config
-        .filter(
-            &non_empty_trimmed(&cli.only),
-            &non_empty_trimmed(&cli.except),
-        )
-        .map_err(|e| fail(&e))?;
-
-    if config.processes().is_empty() {
-        eprintln!("error: no processes defined in {}", cli.config.display());
-        return Err(1);
-    }
-    Ok(config)
 }
 
 /// Loads the config and reports whether it is valid.
@@ -122,9 +135,48 @@ fn validate(path: &Path) -> i32 {
     }
 }
 
-/// Parses a `--log-level` value, surfacing a clap-friendly error string.
-fn parse_log_level(s: &str) -> Result<LogLevel, String> {
-    s.parse()
+/// Loads the config and applies CLI filters, returning the runnable process
+/// set or the exit code to fail with.
+fn load_runnable_config(cli: &Cli) -> Result<Config, i32> {
+    let mut config = match Config::load(&cli.config) {
+        Ok(config) => config,
+        Err(e) => return Err(fail(&e)),
+    };
+    if let Err(e) = config.filter(
+        &non_empty_trimmed(&cli.only),
+        &non_empty_trimmed(&cli.except),
+    ) {
+        return Err(fail(&e));
+    }
+
+    if config.processes().is_empty() {
+        eprintln!("error: no processes defined in {}", cli.config.display());
+        return Err(1);
+    }
+    Ok(config)
+}
+
+/// Prints each non-fatal config warning to stderr; the config still runs.
+fn warn_all(config: &Config) {
+    for warning in config.warnings() {
+        eprintln!("warning: {warning}");
+    }
+}
+
+/// Builds the logger: store-backed for the TUI, a plain ANSI stream otherwise,
+/// with the prefix width sized to the service display names.
+fn build_logger(config: &Config, cli: &Cli, use_tui: bool) -> Arc<Logger> {
+    let dest = if use_tui {
+        Destination::Store
+    } else {
+        Destination::Stream
+    };
+    let display_names = config.display_names();
+    Logger::new(
+        dest,
+        display_names.iter().map(String::as_str),
+        cli.log_level,
+    )
 }
 
 /// Prints an error to stderr and returns the failure exit code.
@@ -133,10 +185,51 @@ fn fail(error: &dyn std::error::Error) -> i32 {
     1
 }
 
-/// Prints each non-fatal config warning to stderr; the config still runs.
-fn warn_all(config: &Config) {
-    for warning in config.warnings() {
-        eprintln!("warning: {warning}");
+/// Watches for termination signals: the first triggers a graceful shutdown,
+/// a second forces an immediate kill and hard exit.
+fn spawn_signal_handler(
+    runner: Runner,
+    system: Arc<TaggedWriter>,
+    force_delay: Duration,
+    use_tui: bool,
+) {
+    tokio::spawn(async move {
+        let mut sigint = signal(SignalKind::interrupt()).expect("install SIGINT handler");
+        let mut sigterm = signal(SignalKind::terminate()).expect("install SIGTERM handler");
+
+        let first = next_signal(&mut sigint, &mut sigterm).await;
+        // A signal terminates the program; set quit before logging so the redraw sees it.
+        runner.request_quit();
+        system.info(format!("received signal: {first}"));
+        runner.shutdown();
+
+        let second = next_signal(&mut sigint, &mut sigterm).await;
+        system.warn(format!(
+            "received second signal: {second}, forcing shutdown"
+        ));
+        runner.force_shutdown();
+
+        tokio::time::sleep(force_delay).await;
+        // The forced exit bypasses the TUI's restore, so restore the terminal first.
+        if use_tui {
+            tui::restore_terminal();
+        }
+        std::process::exit(1);
+    });
+}
+
+/// Runs the supervisor: through the TUI when enabled, else streaming plain output.
+async fn supervise(
+    services: &Arc<[Service]>,
+    runner: &Runner,
+    logger: &Logger,
+    use_tui: bool,
+    force_delay: Duration,
+) -> std::io::Result<i32> {
+    if use_tui {
+        tui::run(services, runner, logger, force_delay).await
+    } else {
+        Ok(runner.run().await)
     }
 }
 
@@ -147,28 +240,6 @@ fn non_empty_trimmed(values: &[String]) -> Vec<String> {
         .map(|v| v.trim().to_owned())
         .filter(|v| !v.is_empty())
         .collect()
-}
-
-/// Watches for termination signals: the first triggers a graceful shutdown,
-/// a second forces an immediate kill and hard exit.
-fn spawn_signal_handler(runner: Runner, mux: Arc<Mux>, force_delay: Duration) {
-    tokio::spawn(async move {
-        let mut sigint = signal(SignalKind::interrupt()).expect("install SIGINT handler");
-        let mut sigterm = signal(SignalKind::terminate()).expect("install SIGTERM handler");
-
-        let first = next_signal(&mut sigint, &mut sigterm).await;
-        mux.info(format!("received signal: {first}"));
-        runner.shutdown();
-
-        let second = next_signal(&mut sigint, &mut sigterm).await;
-        mux.warn(format!(
-            "received second signal: {second}, forcing shutdown"
-        ));
-        runner.force_shutdown();
-
-        tokio::time::sleep(force_delay).await;
-        std::process::exit(1);
-    });
 }
 
 /// Waits for the next SIGINT or SIGTERM, returning its name.
