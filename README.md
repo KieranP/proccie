@@ -88,7 +88,7 @@ proccie uses a two-phase shutdown:
 2. **SIGKILL** -- if processes haven't exited after the timeout (default 10s, configurable with `-t`/`--timeout`), proccie sends `SIGKILL`.
 3. **Force quit** -- sending a second `Ctrl-C` during shutdown immediately `SIGKILL`s all processes. After a brief delay (default 500ms, configurable with `-k`/`--force-delay`), proccie hard-exits.
 
-When a process exits with a code not in its `exit_codes` list (or has no `exit_codes` at all), proccie initiates a full shutdown and propagates that exit code as its own.
+When a process exits with a code not in its `exit_codes` list (or has no `exit_codes` at all), proccie initiates a full shutdown. It propagates a non-zero exit code as its own; an out-of-list exit of `0` fails the run with code `1`, since `0` can't signal a failing run.
 
 ## License
 

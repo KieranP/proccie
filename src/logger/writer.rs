@@ -332,6 +332,8 @@ fn open_log_file(path: &str) -> std::io::Result<Box<dyn Write + Send>> {
         .create(true)
         .append(true)
         .mode(LOG_FILE_PERMS)
+        // Don't follow a symlink target; a pre-planted link mustn't redirect appends.
+        .custom_flags(nix::libc::O_NOFOLLOW)
         .open(path)?;
     Ok(Box::new(LineWriter::new(file)))
 }

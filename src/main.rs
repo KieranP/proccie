@@ -95,12 +95,14 @@ async fn run() -> i32 {
         cli.timeout,
     );
 
-    spawn_signal_handler(
+    if let Err(e) = spawn_signal_handler(
         runner.clone(),
         Arc::clone(logger.system()),
         cli.force_delay,
         use_tui,
-    );
+    ) {
+        return fail(&e);
+    }
 
     logger.system().info(format!(
         "proccie {VERSION} starting with {} process(es)",
@@ -185,18 +187,18 @@ fn fail(error: &dyn std::error::Error) -> i32 {
     1
 }
 
-/// Watches for termination signals: the first triggers a graceful shutdown,
-/// a second forces an immediate kill and hard exit.
+/// Watches for termination signals: the first triggers a graceful shutdown, a
+/// second forces an immediate kill. Handlers install up front so failure errors.
 fn spawn_signal_handler(
     runner: Runner,
     system: Arc<TaggedWriter>,
     force_delay: Duration,
     use_tui: bool,
-) {
-    tokio::spawn(async move {
-        let mut sigint = signal(SignalKind::interrupt()).expect("install SIGINT handler");
-        let mut sigterm = signal(SignalKind::terminate()).expect("install SIGTERM handler");
+) -> std::io::Result<()> {
+    let mut sigint = signal(SignalKind::interrupt())?;
+    let mut sigterm = signal(SignalKind::terminate())?;
 
+    tokio::spawn(async move {
         let first = next_signal(&mut sigint, &mut sigterm).await;
         // A signal terminates the program; set quit before logging so the redraw sees it.
         runner.request_quit();
@@ -216,6 +218,8 @@ fn spawn_signal_handler(
         }
         std::process::exit(1);
     });
+
+    Ok(())
 }
 
 /// Runs the supervisor: through the TUI when enabled, else streaming plain output.

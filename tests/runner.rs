@@ -104,6 +104,32 @@ exit_codes = [0]
 }
 
 #[tokio::test]
+async fn clean_exit_outside_allowed_list_triggers_shutdown() {
+    // A code 0 exit is a failure when 0 isn't in the configured set: exit_codes
+    // enforces membership, so a clean exit doesn't get a free pass.
+    let (runner, out, _dir) = make_runner(
+        r#"
+[main]
+command = "sleep 30"
+
+[task]
+command = "exit 0"
+exit_codes = [2]
+"#,
+    );
+
+    let code = runner.run().await;
+    assert!(
+        out.contents()
+            .contains("task exited with unexpected code 0"),
+        "{}",
+        out.contents()
+    );
+    assert!(out.contents().contains("initiating shutdown"));
+    assert_ne!(code, 0);
+}
+
+#[tokio::test]
 async fn exit_code_matching_array_entry_is_expected() {
     let (runner, out, _dir) = make_runner(
         r#"

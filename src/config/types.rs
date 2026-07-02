@@ -198,8 +198,8 @@ pub struct Process {
     #[serde(default)]
     pub command: String,
 
-    /// Exit codes considered expected; an empty list (default) means any exit
-    /// triggers shutdown. Mutually exclusive with `readiness`.
+    /// Exit codes considered expected; empty (default) means any exit triggers
+    /// shutdown. A code outside a non-empty list fails, 0 included. Excludes `readiness`.
     #[serde(default)]
     pub exit_codes: ExitCodes,
 

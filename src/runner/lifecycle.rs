@@ -294,12 +294,18 @@ impl Shared {
             return RunResult::Shutdown;
         }
 
-        self.report_unexpected_exit(name, signal, exit_code)
+        self.report_unexpected_exit(svc, signal, exit_code)
     }
 
-    /// Classifies an exit that wasn't an allowed code: a signal death or an
-    /// unexpected code is a (retryable) failure; a clean exit is terminal but not.
-    fn report_unexpected_exit(&self, name: &str, signal: Option<i32>, exit_code: i32) -> RunResult {
+    /// Classifies a non-allowed exit: a signal death or an exit outside a
+    /// configured `exit_codes` set (0 included) fails; else a clean exit completes.
+    fn report_unexpected_exit(
+        &self,
+        svc: &Service,
+        signal: Option<i32>,
+        exit_code: i32,
+    ) -> RunResult {
+        let name = svc.key();
         match signal {
             Some(sig) => {
                 self.system.warn(format!(
@@ -308,8 +314,17 @@ impl Shared {
                 ));
                 RunResult::Failed(exit_code)
             }
-            // A clean exit isn't a failure; complete_terminally logs and ends the run.
-            None if exit_code == 0 => RunResult::Completed,
+            // Clean exit completes only without `exit_codes`; with them, 0 isn't
+            // in the set here, so fail as code 1 (0 can't signal a failing run).
+            None if exit_code == 0 => {
+                if matches!(svc.process().ready_when(), ReadyWhen::ExpectedExit(_)) {
+                    self.system
+                        .warn(format!("{name} exited with unexpected code {exit_code}"));
+                    RunResult::Failed(1)
+                } else {
+                    RunResult::Completed
+                }
+            }
             None => {
                 self.system
                     .warn(format!("{name} exited with unexpected code {exit_code}"));
