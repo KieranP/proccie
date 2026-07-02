@@ -6,7 +6,7 @@ mod common;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use proccie::config::{Config, DEFAULT_READINESS_INTERVAL, DEFAULT_READINESS_TIMEOUT, ExitCodes};
+use proccie::config::{Config, ExitCodes, Readiness};
 
 use common::write_config;
 
@@ -151,8 +151,32 @@ log_file = "tmp/web.log"
 
 // --- readiness ---
 
+/// Destructures a command-form readiness, panicking on a delay-form one.
+fn readiness_command(r: &Readiness) -> (&str, Option<&ExitCodes>, Option<&str>) {
+    match r {
+        Readiness::Command {
+            command,
+            exit_codes,
+            output,
+            ..
+        } => (command, exit_codes.as_ref(), output.as_deref()),
+        Readiness::Delay(_) => panic!("expected a command-form readiness"),
+    }
+}
+
+/// The command-form readiness's raw (interval, timeout); `None` means "defaulted".
+fn readiness_intervals(r: &Readiness) -> (Option<Duration>, Option<Duration>) {
+    match r {
+        Readiness::Command {
+            interval, timeout, ..
+        } => (*interval, *timeout),
+        Readiness::Delay(_) => panic!("expected a command-form readiness"),
+    }
+}
+
 #[test]
 fn parses_readiness_string_form() {
+    // A bare string is shorthand for "run this command, ready on exit 0".
     let cfg = load(
         r#"
 [web]
@@ -164,10 +188,12 @@ readiness = "curl -sf http://localhost:3000/health"
         .readiness
         .as_ref()
         .expect("readiness");
-    assert_eq!(r.command, "curl -sf http://localhost:3000/health");
-    // Unspecified interval/timeout fall back to defaults.
-    assert_eq!(r.interval_or_default(), DEFAULT_READINESS_INTERVAL);
-    assert_eq!(r.timeout_or_default(), DEFAULT_READINESS_TIMEOUT);
+    let (command, exit_codes, output) = readiness_command(r);
+    assert_eq!(command, "curl -sf http://localhost:3000/health");
+    assert_eq!(exit_codes.expect("exit_codes").0, vec![0]);
+    assert_eq!(output, None);
+    // Unspecified interval/timeout are left unset (the runtime defaults apply).
+    assert_eq!(readiness_intervals(r), (None, None));
 }
 
 #[test]
@@ -175,39 +201,159 @@ fn parses_readiness_table_form() {
     let cfg = load(
         r#"
 [web]
-command            = "npm start"
-readiness.command  = "curl -sf http://localhost:3000/health"
-readiness.interval = 2
-readiness.timeout  = 10
+command             = "npm start"
+readiness.command   = "curl -s http://localhost:3000/health"
+readiness.exit_codes = [0]
+readiness.interval  = 2
+readiness.timeout   = 10
 "#,
     );
     let r = cfg.processes()["web"]
         .readiness
         .as_ref()
         .expect("readiness");
-    assert_eq!(r.command, "curl -sf http://localhost:3000/health");
-    assert_eq!(r.interval_or_default().as_secs(), 2);
-    assert_eq!(r.timeout_or_default().as_secs(), 10);
+    let (command, exit_codes, _) = readiness_command(r);
+    assert_eq!(command, "curl -s http://localhost:3000/health");
+    assert_eq!(exit_codes.expect("exit_codes").0, vec![0]);
+    assert_eq!(
+        readiness_intervals(r),
+        (Some(Duration::from_secs(2)), Some(Duration::from_secs(10)))
+    );
 }
 
 #[test]
-fn readiness_zero_interval_and_timeout_fall_back_to_defaults() {
-    // Zero is a valid request for the default rather than a parse error.
+fn parses_readiness_exit_codes_and_output() {
     let cfg = load(
         r#"
 [web]
-command            = "npm start"
-readiness.command  = "curl -sf http://localhost:3000/health"
-readiness.interval = 0
-readiness.timeout  = 0
+command              = "npm start"
+readiness.command    = "curl -s http://localhost:3000/health"
+readiness.exit_codes = [0, 22]
+readiness.output     = "\"status\":\"ok\""
 "#,
     );
     let r = cfg.processes()["web"]
         .readiness
         .as_ref()
         .expect("readiness");
-    assert_eq!(r.interval_or_default(), DEFAULT_READINESS_INTERVAL);
-    assert_eq!(r.timeout_or_default(), DEFAULT_READINESS_TIMEOUT);
+    let (_, exit_codes, output) = readiness_command(r);
+    assert_eq!(exit_codes.expect("exit_codes").0, vec![0, 22]);
+    assert_eq!(output, Some("\"status\":\"ok\""));
+}
+
+#[test]
+fn parses_readiness_output_only() {
+    // "output" alone is a valid pass condition; the exit code is then ignored.
+    let cfg = load(
+        r#"
+[web]
+command           = "npm start"
+readiness.command = "curl -s http://localhost:3000/health"
+readiness.output  = "healthy"
+"#,
+    );
+    let r = cfg.processes()["web"]
+        .readiness
+        .as_ref()
+        .expect("readiness");
+    let (_, exit_codes, output) = readiness_command(r);
+    assert!(exit_codes.is_none());
+    assert_eq!(output, Some("healthy"));
+}
+
+#[test]
+fn parses_readiness_delay_form() {
+    let cfg = load(
+        r#"
+[web]
+command         = "npm start"
+readiness.delay = "2s"
+"#,
+    );
+    let r = cfg.processes()["web"]
+        .readiness
+        .as_ref()
+        .expect("readiness");
+    assert!(matches!(r, Readiness::Delay(d) if *d == Duration::from_secs(2)));
+}
+
+#[test]
+fn readiness_command_without_pass_condition_is_rejected() {
+    // A command needs exit_codes or output to define when it passes.
+    let err = load_err(
+        r#"
+[web]
+command            = "npm start"
+readiness.command  = "curl -s http://localhost:3000/health"
+readiness.interval = 2
+"#,
+    );
+    assert!(
+        err.contains("requires \"exit_codes\" or \"output\""),
+        "{err}"
+    );
+}
+
+#[test]
+fn readiness_delay_rejects_command_keys() {
+    // "delay" is a standalone mode: mixing it with command polling is a config error.
+    let err = load_err(
+        r#"
+[web]
+command           = "npm start"
+readiness.delay   = "2s"
+readiness.command = "curl -s http://localhost:3000/health"
+"#,
+    );
+    assert!(err.contains("\"delay\" cannot be combined"), "{err}");
+}
+
+#[test]
+fn readiness_empty_output_is_rejected() {
+    // An empty output substring would match anything, so it's a config error.
+    let err = load_err(
+        r#"
+[web]
+command           = "npm start"
+readiness.command = "curl -s http://localhost:3000/health"
+readiness.output  = ""
+"#,
+    );
+    assert!(err.contains("\"output\" cannot be empty"), "{err}");
+}
+
+#[test]
+fn readiness_empty_exit_codes_is_rejected() {
+    // An empty exit_codes list would never match, so it's a config error.
+    let err = load_err(
+        r#"
+[web]
+command              = "npm start"
+readiness.command    = "curl -s http://localhost:3000/health"
+readiness.exit_codes = []
+"#,
+    );
+    assert!(err.contains("\"exit_codes\" cannot be empty"), "{err}");
+}
+
+#[test]
+fn readiness_zero_interval_and_timeout_are_unset() {
+    // Zero is a valid request for the default (parsed to `None`), not an error.
+    let cfg = load(
+        r#"
+[web]
+command              = "npm start"
+readiness.command    = "curl -s http://localhost:3000/health"
+readiness.exit_codes = [0]
+readiness.interval   = 0
+readiness.timeout    = 0
+"#,
+    );
+    let r = cfg.processes()["web"]
+        .readiness
+        .as_ref()
+        .expect("readiness");
+    assert_eq!(readiness_intervals(r), (None, None));
 }
 
 #[test]
@@ -228,16 +374,17 @@ fn fractional_readiness_duration_is_accepted() {
     let cfg = load(
         r#"
 [web]
-command            = "npm start"
-readiness.command  = "curl -sf http://localhost:3000/health"
-readiness.interval = 2.5
+command              = "npm start"
+readiness.command    = "curl -s http://localhost:3000/health"
+readiness.exit_codes = [0]
+readiness.interval   = 2.5
 "#,
     );
     let r = cfg.processes()["web"]
         .readiness
         .as_ref()
         .expect("readiness");
-    assert_eq!(r.interval_or_default(), Duration::from_millis(2500));
+    assert_eq!(readiness_intervals(r).0, Some(Duration::from_millis(2500)));
 }
 
 #[test]

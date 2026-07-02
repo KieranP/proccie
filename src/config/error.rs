@@ -89,6 +89,15 @@ pub enum ValidationIssueKind {
     #[error("readiness command cannot be empty")]
     EmptyReadinessCommand,
 
+    #[error("readiness command requires \"exit_codes\" or \"output\" to define when it passes")]
+    ReadinessMissingCheck,
+
+    #[error("readiness \"exit_codes\" cannot be empty")]
+    EmptyReadinessExitCodes,
+
+    #[error("readiness \"output\" cannot be empty")]
+    EmptyReadinessOutput,
+
     #[error(
         "\"max_retries\" has no effect with \"readiness\" (retries fire on exit, not a failed readiness check)"
     )]

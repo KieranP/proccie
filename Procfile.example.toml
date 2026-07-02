@@ -12,13 +12,21 @@
 #   exit_codes - (optional) array of integers of expected exit codes.
 #                If the process exits with one of these codes, it won't trigger
 #                a shutdown. Omit for long-running services that should never exit.
-#   readiness  - (optional) readiness check. Either a bare string:
-#                  readiness = "pg_isready -q"
-#                or a table with interval/timeout in seconds:
-#                  readiness.command  = "curl -sf http://localhost:3000/health"
-#                  readiness.interval = 2
-#                  readiness.timeout  = 60
-#                Mutually exclusive with exit_codes.
+#   readiness  - (optional) readiness check; dependents wait until it completes.
+#                Mutually exclusive with exit_codes. Two modes:
+#                * command -- polled until it passes. A pass needs exit_codes
+#                  (the exit code must be in the list) and/or output (stdout must
+#                  contain the substring); at least one is required. A bare string
+#                  is shorthand for exit_codes = [0]:
+#                    readiness = "pg_isready -q"
+#                    readiness.command    = "curl -s http://localhost:3000/health"
+#                    readiness.output     = "\"status\":\"ok\""
+#                    readiness.exit_codes = [0]
+#                    readiness.interval   = 2     # seconds or "500ms"; default 1
+#                    readiness.timeout    = 60    # default 30
+#                * delay -- sleep a fixed duration after launch, then mark ready.
+#                  Incompatible with the command keys above:
+#                    readiness.delay = "3s"
 #   depends_on  - (optional) list of process names that must be ready first
 #   env_file    - (optional) path to a dotenv-style file for this process only
 #   environment - (optional) inline table of extra environment variables
@@ -42,14 +50,17 @@ command    = "rake db:migrate"
 exit_codes = [0]
 depends_on = ["db"]
 
+# Ready only once the health endpoint returns 200 *and* reports status "ok".
 [backend]
-command            = "bin/rails server -p 3000"
-depends_on         = ["migrations"]
-readiness.command  = "curl -sf http://localhost:3000/health"
-readiness.timeout  = 60
-readiness.interval = 2
-environment        = { RAILS_ENV = "development", PORT = "3000" }
-log_file           = "tmp/backend.log"
+command              = "bin/rails server -p 3000"
+depends_on           = ["migrations"]
+readiness.command    = "curl -s http://localhost:3000/health"
+readiness.exit_codes = [0]
+readiness.output     = "\"status\":\"ok\""
+readiness.timeout    = 60
+readiness.interval   = 2
+environment          = { RAILS_ENV = "development", PORT = "3000" }
+log_file             = "tmp/backend.log"
 
 [frontend]
 command     = "npm run dev"
@@ -57,7 +68,12 @@ depends_on  = ["backend"]
 env_file    = ".env.frontend"
 environment = { PORT = "5173", NODE_ENV = "development" }
 
+# No easy health probe: give it a fixed warm-up before dependents start.
+[mailhog]
+command         = "mailhog"
+readiness.delay = "2s"
+
 [worker]
 command     = "bundle exec sidekiq"
-depends_on  = ["db"]
+depends_on  = ["db", "mailhog"]
 max_retries = 3

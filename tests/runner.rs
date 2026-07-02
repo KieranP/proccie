@@ -401,10 +401,11 @@ async fn dependent_waits_for_readiness_check() {
     let (runner, out, _cfg_dir) = make_runner(&format!(
         r#"
 [api]
-command            = "sleep 0.3 && touch {ready} && sleep 30"
-readiness.command  = "test -f {ready}"
-readiness.interval = 1
-readiness.timeout  = 5
+command             = "sleep 0.3 && touch {ready} && sleep 30"
+readiness.command    = "test -f {ready}"
+readiness.exit_codes = [0]
+readiness.interval   = 1
+readiness.timeout    = 5
 
 [frontend]
 command    = "echo frontend-started"
@@ -426,10 +427,11 @@ async fn readiness_timeout_blocks_dependent_and_fails_the_run() {
     let (runner, out, _dir) = make_runner(
         r#"
 [api]
-command            = "sleep 30"
-readiness.command  = "false"
-readiness.interval = 1
-readiness.timeout  = 1
+command             = "sleep 30"
+readiness.command    = "false"
+readiness.exit_codes = [0]
+readiness.interval   = 1
+readiness.timeout    = 1
 
 [frontend]
 command    = "echo frontend-started"
@@ -452,10 +454,11 @@ async fn readiness_check_runs_at_least_once_when_timeout_is_short() {
     let (runner, out, _dir) = make_runner(
         r#"
 [api]
-command            = "sleep 30"
-readiness.command  = "true"
-readiness.interval = 10
-readiness.timeout  = 1
+command             = "sleep 30"
+readiness.command    = "true"
+readiness.exit_codes = [0]
+readiness.interval   = 10
+readiness.timeout    = 1
 
 [frontend]
 command    = "echo frontend-started"
@@ -477,10 +480,11 @@ async fn readiness_check_sees_the_process_environment() {
         r#"
 [api]
 command            = "sleep 30"
-environment        = { READY_FLAG = "yes" }
-readiness.command  = "test \"$READY_FLAG\" = yes"
-readiness.interval = 1
-readiness.timeout  = 5
+environment          = { READY_FLAG = "yes" }
+readiness.command    = "test \"$READY_FLAG\" = yes"
+readiness.exit_codes = [0]
+readiness.interval   = 1
+readiness.timeout    = 5
 
 [frontend]
 command    = "echo frontend-started"
@@ -491,6 +495,137 @@ depends_on = ["api"]
 
     let handle = run_in_background(&runner);
     assert!(wait_for_output(&out, "frontend-started", TIMEOUT).await);
+
+    runner.shutdown();
+    handle.await.unwrap();
+}
+
+#[tokio::test]
+async fn readiness_delay_releases_dependent_after_sleeping() {
+    let (runner, out, _dir) = make_runner(
+        r#"
+[api]
+command         = "sleep 30"
+readiness.delay = "300ms"
+
+[frontend]
+command    = "echo frontend-started"
+exit_codes = [0]
+depends_on = ["api"]
+"#,
+    );
+
+    let handle = run_in_background(&runner);
+    assert!(wait_for_output(&out, "frontend-started", TIMEOUT).await);
+    assert!(out.contents().contains("ready after delay"));
+
+    runner.shutdown();
+    handle.await.unwrap();
+}
+
+#[tokio::test]
+async fn readiness_delay_does_not_release_a_dependent_when_the_process_dies() {
+    // The api exits before its delay elapses; that's an unexpected exit for a
+    // readiness service, so the dependent must never start and the run fails.
+    let (runner, out, _dir) = make_runner(
+        r#"
+[api]
+command         = "sleep 0.2; exit 1"
+readiness.delay = "30s"
+
+[frontend]
+command    = "echo frontend-started"
+exit_codes = [0]
+depends_on = ["api"]
+"#,
+    );
+
+    let code = runner.run().await;
+    let output = out.contents();
+    assert!(!output.contains("frontend-started"), "{output}");
+    assert!(!output.contains("ready after delay"), "{output}");
+    assert_ne!(code, 0);
+}
+
+#[tokio::test]
+async fn readiness_matches_a_non_zero_exit_code() {
+    // The check "passes" on exit 3, which a plain exit-0 rule would reject.
+    let (runner, out, _dir) = make_runner(
+        r#"
+[api]
+command              = "sleep 30"
+readiness.command    = "exit 3"
+readiness.exit_codes = [3]
+readiness.interval   = 1
+readiness.timeout    = 5
+
+[frontend]
+command    = "echo frontend-started"
+exit_codes = [0]
+depends_on = ["api"]
+"#,
+    );
+
+    let handle = run_in_background(&runner);
+    assert!(wait_for_output(&out, "frontend-started", TIMEOUT).await);
+
+    runner.shutdown();
+    handle.await.unwrap();
+}
+
+#[tokio::test]
+async fn readiness_requires_both_exit_code_and_output_when_both_set() {
+    // The command exits 0 (allowed) but its stdout never contains "ready", so the
+    // conjunction fails: readiness times out, the dependent never starts.
+    let (runner, out, _dir) = make_runner(
+        r#"
+[api]
+command              = "sleep 30"
+readiness.command    = "echo nope"
+readiness.exit_codes = [0]
+readiness.output     = "ready"
+readiness.interval   = 1
+readiness.timeout    = 1
+
+[frontend]
+command    = "echo frontend-started"
+exit_codes = [0]
+depends_on = ["api"]
+"#,
+    );
+
+    let code = runner.run().await;
+    let output = out.contents();
+    assert!(output.contains("timed out"), "{output}");
+    assert!(!output.contains("frontend-started"), "{output}");
+    assert_ne!(code, 0);
+}
+
+#[tokio::test]
+async fn readiness_matches_on_command_output() {
+    // Ready only once stdout contains the substring, regardless of exit code.
+    let dir = tempfile::tempdir().unwrap();
+    let ready = dir.path().join("ready");
+    let ready = ready.display().to_string();
+
+    let (runner, out, _cfg_dir) = make_runner(&format!(
+        r#"
+[api]
+command           = "sleep 0.3 && echo serving > {ready} && sleep 30"
+readiness.command = "cat {ready} 2>/dev/null; true"
+readiness.output  = "serving"
+readiness.interval = 1
+readiness.timeout  = 5
+
+[frontend]
+command    = "echo frontend-started"
+exit_codes = [0]
+depends_on = ["api"]
+"#,
+    ));
+
+    let handle = run_in_background(&runner);
+    assert!(wait_for_output(&out, "frontend-started", Duration::from_secs(10)).await);
 
     runner.shutdown();
     handle.await.unwrap();
@@ -799,10 +934,11 @@ async fn stopping_a_readiness_service_is_not_a_timeout_failure() {
     let (runner, out, _dir) = make_runner(
         r#"
 [api]
-command            = "sleep 30"
-readiness.command  = "false"
-readiness.interval = 1
-readiness.timeout  = 30
+command             = "sleep 30"
+readiness.command    = "false"
+readiness.exit_codes = [0]
+readiness.interval   = 1
+readiness.timeout    = 30
 "#,
     );
 

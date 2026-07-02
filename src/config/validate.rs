@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, HashSet};
 use super::error::{ConfigError, ValidationIssue, ValidationIssueKind};
 use super::graph;
 use super::parse::parse_color;
-use super::types::Process;
+use super::types::{ExitCodes, Process, Readiness};
 
 /// Checks every process for correctness, then detects dependency cycles.
 pub fn validate(procs: &BTreeMap<String, Process>) -> Result<(), ConfigError> {
@@ -46,8 +46,27 @@ fn validate_process(
         if !proc.exit_codes.is_empty() {
             issue(ValidationIssueKind::ExitCodesAndReadiness);
         }
-        if readiness.command.is_empty() {
-            issue(ValidationIssueKind::EmptyReadinessCommand);
+        if let Readiness::Command {
+            command,
+            exit_codes,
+            output,
+            ..
+        } = readiness
+        {
+            if command.is_empty() {
+                issue(ValidationIssueKind::EmptyReadinessCommand);
+            }
+            // A command needs a pass condition: an allowed exit code set or an output match.
+            if exit_codes.is_none() && output.is_none() {
+                issue(ValidationIssueKind::ReadinessMissingCheck);
+            }
+            // When given, neither may be empty: an empty set/string is almost certainly a mistake.
+            if exit_codes.as_ref().is_some_and(ExitCodes::is_empty) {
+                issue(ValidationIssueKind::EmptyReadinessExitCodes);
+            }
+            if output.as_ref().is_some_and(String::is_empty) {
+                issue(ValidationIssueKind::EmptyReadinessOutput);
+            }
         }
         // Retries fire on exit, not a failed readiness window, so they'd be ignored.
         if proc.max_retries > 0 {

@@ -4,8 +4,6 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde::de::{self, Deserializer, MapAccess, Visitor};
 
-use super::{DEFAULT_READINESS_INTERVAL, DEFAULT_READINESS_TIMEOUT};
-
 /// Exit codes considered expected for a process; an empty set means any exit
 /// triggers shutdown. In TOML: an array of integers, e.g. `exit_codes = [0, 1]`.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -25,29 +23,21 @@ impl ExitCodes {
     }
 }
 
-/// A readiness check; dependents wait until its command exits 0. In TOML: a bare
-/// string, or a table with `command`/`interval`/`timeout`.
+/// A readiness check; dependents wait until it completes. In TOML: a table with
+/// `command` plus `exit_codes`/`output` (and optional `interval`/`timeout`), or `delay`.
 #[derive(Debug, Clone)]
-pub struct Readiness {
-    pub command: String,
-    pub interval: Option<Duration>,
-    pub timeout: Option<Duration>,
-}
-
-impl Readiness {
-    /// Returns the configured interval, or [`DEFAULT_READINESS_INTERVAL`].
-    pub fn interval_or_default(&self) -> Duration {
-        self.interval
-            .filter(|d| !d.is_zero())
-            .unwrap_or(DEFAULT_READINESS_INTERVAL)
-    }
-
-    /// Returns the configured timeout, or [`DEFAULT_READINESS_TIMEOUT`].
-    pub fn timeout_or_default(&self) -> Duration {
-        self.timeout
-            .filter(|d| !d.is_zero())
-            .unwrap_or(DEFAULT_READINESS_TIMEOUT)
-    }
+pub enum Readiness {
+    /// Poll a command until it passes: exit code in `exit_codes` (when set) and
+    /// stdout contains `output` (when set). Validation requires at least one.
+    Command {
+        command: String,
+        interval: Option<Duration>,
+        timeout: Option<Duration>,
+        exit_codes: Option<ExitCodes>,
+        output: Option<String>,
+    },
+    /// Sleep for a fixed duration, then release dependents.
+    Delay(Duration),
 }
 
 /// A readiness duration: integer seconds, a positive float, or a humantime
@@ -117,14 +107,19 @@ impl<'de> Deserialize<'de> for Readiness {
             type Value = Readiness;
 
             fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                f.write_str("a readiness command string or a table with a \"command\" key")
+                f.write_str(
+                    "a readiness command string or a table with a \"command\" or \"delay\" key",
+                )
             }
 
+            // A bare string is shorthand for "run this command, ready on exit 0".
             fn visit_str<E: de::Error>(self, value: &str) -> Result<Readiness, E> {
-                Ok(Readiness {
+                Ok(Readiness::Command {
                     command: value.to_owned(),
                     interval: None,
                     timeout: None,
+                    exit_codes: Some(ExitCodes(vec![0])),
+                    output: None,
                 })
             }
 
@@ -135,30 +130,65 @@ impl<'de> Deserialize<'de> for Readiness {
                 let mut command: Option<String> = None;
                 let mut interval: Option<Duration> = None;
                 let mut timeout: Option<Duration> = None;
+                let mut exit_codes: Option<ExitCodes> = None;
+                let mut output: Option<String> = None;
+                let mut delay: Option<Duration> = None;
 
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
                         "command" => command = Some(map.next_value()?),
                         "interval" => interval = map.next_value::<DurationValue>()?.0,
                         "timeout" => timeout = map.next_value::<DurationValue>()?.0,
+                        // Presence is captured here; validation rejects empty values.
+                        "exit_codes" => exit_codes = Some(map.next_value()?),
+                        "output" => output = Some(map.next_value()?),
+                        // Zero is a valid immediate-ready delay, so keep it rather than dropping it.
+                        "delay" => {
+                            delay = Some(map.next_value::<DurationValue>()?.0.unwrap_or_default())
+                        }
                         // Reject unknown keys so typos surface instead of being ignored.
                         _ => {
                             return Err(de::Error::unknown_field(
                                 &key,
-                                &["command", "interval", "timeout"],
+                                &[
+                                    "command",
+                                    "interval",
+                                    "timeout",
+                                    "exit_codes",
+                                    "output",
+                                    "delay",
+                                ],
                             ));
                         }
                     }
                 }
 
+                // "delay" is a standalone mode: it can't share the table with command polling.
+                if let Some(delay) = delay {
+                    if command.is_some()
+                        || interval.is_some()
+                        || timeout.is_some()
+                        || exit_codes.is_some()
+                        || output.is_some()
+                    {
+                        return Err(de::Error::custom(
+                            "readiness: \"delay\" cannot be combined with \"command\", \
+                             \"interval\", \"timeout\", \"exit_codes\", or \"output\"",
+                        ));
+                    }
+                    return Ok(Readiness::Delay(delay));
+                }
+
                 let command = command.ok_or_else(|| {
-                    de::Error::custom("readiness: table form requires \"command\" key")
+                    de::Error::custom("readiness: table form requires \"command\" or \"delay\" key")
                 })?;
 
-                Ok(Readiness {
+                Ok(Readiness::Command {
                     command,
                     interval,
                     timeout,
+                    exit_codes,
+                    output,
                 })
             }
         }
@@ -175,7 +205,7 @@ pub enum ReadyWhen<'a> {
     Launched,
     /// When the process exits with an expected code.
     ExpectedExit(&'a ExitCodes),
-    /// When the readiness command passes.
+    /// When the readiness check passes: its command succeeds or its delay elapses.
     ReadinessPass(&'a Readiness),
 }
 
@@ -185,6 +215,7 @@ impl ReadyWhen<'_> {
         match self {
             ReadyWhen::Launched => "launch",
             ReadyWhen::ExpectedExit(_) => "exit with expected code",
+            ReadyWhen::ReadinessPass(Readiness::Delay(_)) => "become ready after its delay",
             ReadyWhen::ReadinessPass(_) => "pass readiness check",
         }
     }
@@ -203,8 +234,8 @@ pub struct Process {
     #[serde(default)]
     pub exit_codes: ExitCodes,
 
-    /// Readiness check; dependents wait until its command exits 0.
-    /// Mutually exclusive with `exit_codes`.
+    /// Readiness check; dependents wait until its command passes or its delay
+    /// elapses. Mutually exclusive with `exit_codes`.
     #[serde(default)]
     pub readiness: Option<Readiness>,
 

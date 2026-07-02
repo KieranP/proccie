@@ -38,12 +38,13 @@ exit_codes = [0]
 depends_on = ["db"]
 
 [web]
-command            = "bin/rails server -p 3000"
-depends_on         = ["migrations"]
-readiness.command  = "curl -sf http://localhost:3000/health"
-readiness.timeout  = 60
-readiness.interval = 2
-environment        = { RAILS_ENV = "development", PORT = "3000" }
+command              = "bin/rails server -p 3000"
+depends_on           = ["migrations"]
+readiness.command    = "curl -sf http://localhost:3000/health"
+readiness.exit_codes = [0]
+readiness.timeout    = 60
+readiness.interval   = 2
+environment          = { RAILS_ENV = "development", PORT = "3000" }
 
 [frontend]
 command     = "npm run dev"

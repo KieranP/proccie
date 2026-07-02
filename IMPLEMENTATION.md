@@ -41,11 +41,14 @@ state wins and wakes all waiters. A process becomes ready:
 
 - **bare** — on launch;
 - **`exit_codes`** — when it exits with an allowed code;
-- **`readiness`** — when the readiness command exits 0 (polled at the interval,
-  the timeout window opening at first launch). Checks pause while no child is
-  live, and a pass counts only for the child it probed, so a stale pass between
-  retries can't release dependents. A timeout fails the run unless the service
-  was manually stopped.
+- **`readiness.command`** — when the polled command passes: its exit code is in
+  `exit_codes` (when set) *and* its stdout contains `output` (when set). Polled at
+  the interval, the timeout window opening at first launch. Checks pause while no
+  child is live, and a pass counts only for the child it probed, so a stale pass
+  between retries can't release dependents. A timeout fails the run unless the
+  service was manually stopped;
+- **`readiness.delay`** — after a fixed sleep from first launch, provided the
+  child is still live (a shutdown, stop, or exit cancels it instead).
 
 `exit_codes` and `readiness` are mutually exclusive.
 
