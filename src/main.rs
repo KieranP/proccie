@@ -12,6 +12,7 @@ use proccie::config::{Config, parse_duration};
 use proccie::logger::{Destination, LogLevel, Logger, TaggedWriter};
 use proccie::runner::Runner;
 use proccie::service::Service;
+use proccie::theme::Theme;
 use proccie::tui;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -78,12 +79,22 @@ async fn run() -> i32 {
     warn_all(&config);
 
     // The TUI launches when stdout is a TTY, unless `--no-tui` forces plain mode.
-    let use_tui = std::io::stdout().is_terminal() && !cli.no_tui;
-    let logger = build_logger(&config, &cli, use_tui);
+    let is_tty = std::io::stdout().is_terminal();
+    let use_tui = is_tty && !cli.no_tui;
+    // Detect the terminal background on a TTY so colors adapt; pipes assume dark.
+    // Blocking I/O, so run it off the async worker.
+    let theme = if is_tty {
+        tokio::task::spawn_blocking(Theme::detect_theme)
+            .await
+            .unwrap_or_default()
+    } else {
+        Theme::default()
+    };
+    let logger = build_logger(&config, &cli, use_tui, theme);
 
     // Built once, then shared: color resolution borrows it, the runner owns it.
     let adjacency = config.adjacency();
-    let services = match Service::build_all(&config, &adjacency, &logger) {
+    let services = match Service::build_all(&config, &adjacency, &logger, theme) {
         Ok(services) => services,
         Err(e) => return fail(&e),
     };
@@ -109,7 +120,7 @@ async fn run() -> i32 {
         config.processes().len()
     ));
 
-    let code = match supervise(&services, &runner, &logger, use_tui, cli.force_delay).await {
+    let code = match supervise(&services, &runner, &logger, use_tui, theme, cli.force_delay).await {
         Ok(code) => code,
         Err(e) => return fail(&e),
     };
@@ -167,7 +178,7 @@ fn warn_all(config: &Config) {
 
 /// Builds the logger: store-backed for the TUI, a plain ANSI stream otherwise,
 /// with the prefix width sized to the service display names.
-fn build_logger(config: &Config, cli: &Cli, use_tui: bool) -> Arc<Logger> {
+fn build_logger(config: &Config, cli: &Cli, use_tui: bool, theme: Theme) -> Arc<Logger> {
     let dest = if use_tui {
         Destination::Store
     } else {
@@ -178,6 +189,7 @@ fn build_logger(config: &Config, cli: &Cli, use_tui: bool) -> Arc<Logger> {
         dest,
         display_names.iter().map(String::as_str),
         cli.log_level,
+        theme,
     )
 }
 
@@ -228,10 +240,11 @@ async fn supervise(
     runner: &Runner,
     logger: &Logger,
     use_tui: bool,
+    theme: Theme,
     force_delay: Duration,
 ) -> std::io::Result<i32> {
     if use_tui {
-        tui::run(services, runner, logger, force_delay).await
+        tui::run(services, runner, logger, theme, force_delay).await
     } else {
         Ok(runner.run().await)
     }

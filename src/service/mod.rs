@@ -4,14 +4,12 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use anstyle::{AnsiColor, Color};
+use anstyle::Color;
 
 use crate::config::{Adjacency, Config, Process, topo_order};
-use crate::logger::{LogStore, Logger, PREFIX_COLORS, TaggedWriter};
+use crate::logger::{LogStore, Logger, TaggedWriter};
 use crate::sync::MutexExt;
-
-/// The dimmed color for per-tab notes (e.g. the manual-shutdown message).
-const NOTE_COLOR: Color = Color::Ansi(AnsiColor::BrightBlack);
+use crate::theme::Theme;
 
 /// A service's lifecycle status, driving the tab icon and the close gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -90,6 +88,8 @@ pub struct Service {
     process: Arc<Process>,
     label: String,
     color: Color,
+    /// A dimmed, background-adaptive neutral for per-service notes.
+    note_color: Color,
     /// Lifecycle status, shared between the process task (writer) and the TUI.
     status: Mutex<ServiceStatus>,
     logger: Arc<TaggedWriter>,
@@ -102,8 +102,9 @@ impl Service {
         config: &Config,
         adjacency: &Adjacency,
         logger: &Logger,
+        theme: Theme,
     ) -> std::io::Result<Arc<[Service]>> {
-        let colors = resolve_colors(config, adjacency);
+        let colors = resolve_colors(config, adjacency, theme);
         config
             .processes()
             .iter()
@@ -116,6 +117,7 @@ impl Service {
                     key: key.clone(),
                     process: Arc::new(proc.clone()),
                     color,
+                    note_color: theme.faint(),
                     status: Mutex::new(ServiceStatus::Waiting),
                     logger,
                     label,
@@ -199,13 +201,14 @@ impl Service {
     /// Emits a per-service note (an always-shown explanatory line, e.g. the
     /// manual-shutdown message); the writer routes it per destination.
     pub fn note(&self, msg: impl AsRef<str>) {
-        self.logger.note(NOTE_COLOR, msg);
+        self.logger.note(self.note_color, msg);
     }
 }
 
-/// Resolves each service's color: its configured `color`, else the next
-/// `PREFIX_COLORS` slot, assigned walking start order (not alphabetical key order).
-fn resolve_colors(config: &Config, adjacency: &Adjacency) -> BTreeMap<String, Color> {
+/// Resolves each service's color: its configured `color`, else the next slot of
+/// the theme's palette, assigned walking start order (not alphabetical key order).
+fn resolve_colors(config: &Config, adjacency: &Adjacency, theme: Theme) -> BTreeMap<String, Color> {
+    let palette = theme.palette();
     let mut idx = 0;
     let processes = config.processes();
     topo_order(adjacency)
@@ -214,7 +217,7 @@ fn resolve_colors(config: &Config, adjacency: &Adjacency) -> BTreeMap<String, Co
             // Skip a name that is only a dependency (no process): never indexed.
             let proc = processes.get(&key)?;
             let color = proc.color().unwrap_or_else(|| {
-                let color = PREFIX_COLORS[idx % PREFIX_COLORS.len()];
+                let color = palette[idx % palette.len()];
                 idx += 1;
                 color.into()
             });

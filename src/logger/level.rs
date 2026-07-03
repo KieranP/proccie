@@ -1,7 +1,9 @@
 //! Log severity for leveled messages: ordering, labels, and the
 //! console/structured styling each level renders with.
 
-use anstyle::{AnsiColor, Style};
+use anstyle::Style;
+
+use crate::theme::Theme;
 
 /// Severity of a leveled log message. A line is emitted only when its level is
 /// at or above the configured threshold; ordering follows the declaration order.
@@ -50,14 +52,10 @@ impl LogLevel {
         }
     }
 
-    /// The console style for lines at this level: a colored base for warn/error
-    /// plus the level's [`Emphasis`].
-    pub fn style(self) -> Style {
-        let base = match self {
-            LogLevel::Warn => Style::new().fg_color(Some(AnsiColor::Yellow.into())),
-            LogLevel::Error => Style::new().fg_color(Some(AnsiColor::Red.into())),
-            LogLevel::Debug | LogLevel::Info => Style::new(),
-        };
+    /// The console style for lines at this level on `theme`: the level's
+    /// [`color`](Self::color) plus its [`Emphasis`].
+    pub fn style(self, theme: Theme) -> Style {
+        let base = Style::new().fg_color(Some(self.color(theme)));
         match self.emphasis() {
             Emphasis::Dim => base.dimmed(),
             Emphasis::Normal => base,
@@ -65,14 +63,14 @@ impl LogLevel {
         }
     }
 
-    /// The representative prefix color for this level, used when storing
-    /// structured system lines for the TUI.
-    pub fn color(self) -> anstyle::Color {
+    /// The representative prefix color for this level on `theme`, each shade
+    /// picked to stay legible on the terminal background.
+    pub fn color(self, theme: Theme) -> anstyle::Color {
         match self {
-            LogLevel::Debug => AnsiColor::BrightBlack.into(),
-            LogLevel::Info => AnsiColor::White.into(),
-            LogLevel::Warn => AnsiColor::Yellow.into(),
-            LogLevel::Error => AnsiColor::Red.into(),
+            LogLevel::Debug => theme.faint(),
+            LogLevel::Info => theme.subtle(),
+            LogLevel::Warn => theme.warning(),
+            LogLevel::Error => theme.error(),
         }
     }
 }

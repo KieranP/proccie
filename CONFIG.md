@@ -23,11 +23,39 @@ Set at the top level, outside any process section.
 | `env_file`    | string          | _(none)_     | dotenv-style file applied to this process only.                                                                                     |
 | `environment` | table           | `{}`         | Inline variables for this process (highest priority).                                                                              |
 | `log_file`    | string          | _(none)_     | Write a plain, ANSI-stripped copy of this process's output here (created/appended), in addition to the console.                     |
+| `color`       | string          | _(auto)_     | Overrides the auto-assigned prefix/tab color: a named ANSI color or `#rrggbb` hex. See [Colors](#colors).                          |
 | `max_retries` | int             | `0`          | Restarts after an unexpected exit before giving up and shutting down. `0` (default) disables retries. Incompatible with `readiness`. |
 
 A process killed by a signal is reported with the shell convention code 128 +
 the signal number (e.g. `143` for SIGTERM); a signal death is never an expected
 exit, even if its code appears in `exit_codes`.
+
+## Colors
+
+Each process gets a distinct color for its log-line prefix and its tab in the
+interactive TUI, assigned in start order from a built-in palette. When stdout is
+a terminal, proccie detects its background and adapts the palette — vivid colors
+on a dark background, saturated ones on a light background — so prefixes stay
+legible either way, in both the TUI and plain (`--no-tui`) mode. Piped or
+redirected output is emitted plain, with all color stripped (honoring `NO_COLOR`
+and `CLICOLOR_FORCE`).
+
+Override a process's color with `color`:
+
+```toml
+[web]
+command = "bin/rails server"
+color   = "bright-magenta"   # or a hex value, e.g. "#ff8800"
+```
+
+Accepted values:
+
+- One of the 16 named ANSI colors: `black`, `red`, `green`, `yellow`, `blue`,
+  `magenta`, `cyan`, `white`, and their `bright-` variants (e.g. `bright-green`).
+  Separators may be `-` or `_`, and names are case-insensitive.
+- A `#rrggbb` hex triplet (six hex digits).
+
+An unrecognized value fails validation.
 
 ## Readiness checks
 

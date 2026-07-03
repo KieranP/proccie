@@ -13,6 +13,7 @@ use proccie::config::Config;
 use proccie::logger::{Destination, LogLevel, Logger, Source};
 use proccie::runner::Runner;
 use proccie::service::{Service, ServiceStatus};
+use proccie::theme::Theme;
 use proccie::tui::App;
 
 use common::write_config;
@@ -33,11 +34,22 @@ fn build_app_runner(toml: &str) -> (App, Arc<[Service]>, Runner) {
     let (_dir, path) = write_config(toml);
     let config = Config::load(&path).expect("config loads");
     // Store mode so the system and per-service stores share one clock/redraw.
-    let logger = Logger::new(Destination::Store, config.names(), LogLevel::Debug);
+    let logger = Logger::new(
+        Destination::Store,
+        config.names(),
+        LogLevel::Debug,
+        Theme::Dark,
+    );
     let adjacency = config.adjacency();
-    let services = Service::build_all(&config, &adjacency, &logger).expect("build services");
+    let services =
+        Service::build_all(&config, &adjacency, &logger, Theme::Dark).expect("build services");
     let system = Arc::clone(logger.system().store());
-    let app = App::new(Arc::clone(&services), system, logger.pad_width());
+    let app = App::new(
+        Arc::clone(&services),
+        system,
+        logger.pad_width(),
+        Theme::Dark,
+    );
     let runner = Runner::new(
         Arc::clone(&services),
         adjacency,
@@ -112,8 +124,8 @@ fn unread_follows_focus_and_scroll() {
     assert!(!app.has_unread(b));
 
     // Scrolled up on b, new output re-raises the mark.
-    app.set_viewport(0); // so max_offset == line count
-    app.scroll_up(1);
+    app.set_viewport(0);
+    app.scroll_up(1); // offset > 0 pauses following
     emit(b);
     app.mark_seen();
     assert!(app.has_unread(b));

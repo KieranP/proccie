@@ -48,6 +48,7 @@ src/main.rs            CLI entrypoint, TTY/TUI mode selection, signal handling
 src/lib.rs             library crate root
 src/sync.rs            poison-recovering mutex helper (MutexExt)
 src/config/            TOML parsing, validation, cycle/dependents graph, env resolution
+src/theme/             terminal light/dark detection, per-background colors, color parsing
 src/logger/            UI-agnostic logging: per-tag writers over a stream or LogStore
 src/service/           per-service object (key, config, color, status, own log store)
 src/runner/            orchestrator (mod) + per-process lifecycle, readiness, deps

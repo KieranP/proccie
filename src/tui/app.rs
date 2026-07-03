@@ -10,6 +10,8 @@ use crate::logger::LogStore;
 use crate::runner::Runner;
 use crate::service::Service;
 
+use crate::theme::Theme;
+
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// A tab in the view: the combined All view, or one service (by index).
@@ -19,7 +21,8 @@ pub enum Tab {
     Service(usize),
 }
 
-/// Per-tab scroll position; offset 0 means following the tail.
+/// Per-tab scroll position in wrapped display rows from the tail; 0 follows the
+/// newest row. May transiently exceed the max; the render layer clamps per frame.
 #[derive(Clone, Copy, Default)]
 pub struct Scroll {
     pub offset_from_bottom: usize,
@@ -37,6 +40,8 @@ pub struct App {
     pub services: Arc<[Service]>,
     pub system: Arc<LogStore>,
     pub prefix_width: usize,
+    /// The detected terminal polarity, so neutral colors stay legible.
+    pub theme: Theme,
     /// Open tabs, always starting with [`Tab::All`].
     tabs: Vec<Tab>,
     /// Per-tab scroll, parallel to `tabs`.
@@ -44,7 +49,7 @@ pub struct App {
     active: usize,
     /// Highest `total` the user has actually viewed, per service key.
     seen: HashMap<String, u64>,
-    /// Inner viewport height, refreshed each frame for scroll clamping.
+    /// Inner viewport height (rows), refreshed each frame; drives paging.
     viewport: usize,
     pub quit: bool,
     /// proccie's exit code once the runner has finished.
@@ -56,8 +61,17 @@ pub struct App {
 }
 
 impl App {
+    /// Sentinel offset meaning "as far up as the content allows"; the render
+    /// layer resolves it to the real maximum once it has measured wrapping.
+    const SCROLL_TO_TOP: usize = usize::MAX;
+
     /// Builds the initial state: an All tab plus one tab per service.
-    pub fn new(services: Arc<[Service]>, system: Arc<LogStore>, prefix_width: usize) -> App {
+    pub fn new(
+        services: Arc<[Service]>,
+        system: Arc<LogStore>,
+        prefix_width: usize,
+        theme: Theme,
+    ) -> App {
         let mut tabs = vec![Tab::All];
         let mut scroll = vec![Scroll::default()];
         for i in 0..services.len() {
@@ -70,6 +84,7 @@ impl App {
             services,
             system,
             prefix_width,
+            theme,
             tabs,
             scroll,
             active: 0,
@@ -128,21 +143,23 @@ impl App {
         self.scroll[self.active]
     }
 
-    /// Records the inner viewport height for scroll clamping.
+    /// Records the inner viewport height (rows) for paging and scroll clamping.
     pub fn set_viewport(&mut self, height: usize) {
         self.viewport = height;
     }
 
-    /// Pulls the active tab's scroll back within range, so eviction (or a
-    /// shrunken viewport) can't strand the view past the top of the content.
-    pub fn clamp_scroll(&mut self) {
-        // Following the tail (offset 0) is always in range; skip the store-locking scan.
-        if self.active_scroll().is_following() {
-            return;
-        }
-        let max = self.max_offset();
-        if self.active_scroll().offset_from_bottom > max {
-            self.set_offset(max);
+    /// Writes back the active tab's scroll offset (rows from the bottom), once
+    /// the render layer has clamped it to the measured height.
+    pub fn set_scroll_offset(&mut self, offset: usize) {
+        self.set_offset(offset);
+    }
+
+    /// Logical line count of the active tab; lets the render layer skip measuring
+    /// when the offset can't be near the top.
+    pub(crate) fn content_len(&self) -> usize {
+        match self.tabs[self.active] {
+            Tab::All => self.all_stores().map(|s| s.len()).sum(),
+            Tab::Service(i) => self.services[i].log().len(),
         }
     }
 
@@ -222,21 +239,21 @@ impl App {
             .chain(std::iter::once(&self.system))
     }
 
-    /// Scrolls up `n` lines (pausing follow).
+    /// Scrolls up `n` rows (pausing follow); the render layer clamps overshoot.
     pub fn scroll_up(&mut self, n: usize) {
-        let offset = self.active_scroll().offset_from_bottom + n;
-        self.set_offset(offset.min(self.max_offset()));
+        let offset = self.active_scroll().offset_from_bottom.saturating_add(n);
+        self.set_offset(offset);
     }
 
-    /// Scrolls down `n` lines; reaching the bottom resumes follow.
+    /// Scrolls down `n` rows; reaching the bottom resumes follow.
     pub fn scroll_down(&mut self, n: usize) {
         let offset = self.active_scroll().offset_from_bottom.saturating_sub(n);
         self.set_offset(offset);
     }
 
-    /// Jumps to the top (oldest lines).
+    /// Jumps to the top (oldest rows); the render layer clamps to the real max.
     pub fn scroll_home(&mut self) {
-        self.set_offset(self.max_offset());
+        self.set_offset(Self::SCROLL_TO_TOP);
     }
 
     /// Jumps to the bottom and resumes follow.
@@ -282,19 +299,6 @@ impl App {
             _ => {}
         }
         false
-    }
-
-    /// Number of lines available in the active tab (for scroll clamping).
-    fn content_len(&self) -> usize {
-        match self.tabs[self.active] {
-            Tab::All => self.all_stores().map(|s| s.len()).sum(),
-            Tab::Service(i) => self.services[i].log().len(),
-        }
-    }
-
-    /// The furthest the active tab can scroll up given the viewport.
-    fn max_offset(&self) -> usize {
-        self.content_len().saturating_sub(self.viewport)
     }
 
     /// Sets the active tab's scroll offset, deriving follow (offset 0 == tail).

@@ -8,8 +8,11 @@ Domain layers that depend downward only:
 
 - **`config`** — parses/validates the TOML, detects cycles, and resolves each
   process's environment into a `Config` of `Process` entries.
+- **`theme`** — the terminal's detected light/dark background, plus the
+  per-background color choices (service palette, neutrals, accents) and the
+  parser for user-configured `color` values.
 - **`logger`** — UI-agnostic logging: per-tag `TaggedWriter`s over an ANSI
-  stream or an in-memory `LogStore`, plus a color palette.
+  stream or an in-memory `LogStore`.
 - **`service`** — the per-service object (`Service`): config, identity, color,
   lifecycle `ServiceStatus`, and its own writer/store. Runner and TUI both work
   in terms of `Service`.
@@ -21,9 +24,10 @@ Domain layers that depend downward only:
 ## Startup
 
 `main` parses CLI flags, loads and validates the config (resolving
-environments), applies `--only`/`--except`, builds the `Logger` and `Service`s,
-then constructs a `Runner`. The TUI drives output when stdout is a TTY (unless
-`--no-tui`); otherwise lines stream as plain prefixed text.
+environments), applies `--only`/`--except`, detects the terminal background (on a
+TTY), builds the `Logger` and `Service`s, then constructs a `Runner`. The TUI
+drives output when stdout is a TTY (unless `--no-tui`); otherwise lines stream as
+plain prefixed text.
 
 ## Process launch
 
@@ -87,10 +91,12 @@ A finished run stays open for log review; quitting is always explicit.
 
 Each service's `TaggedWriter` prefixes lines with its color-coded name and sends
 them to an ANSI stream (`--no-tui`) or its own `LogStore` (the TUI merges every
-service store plus a system store for the All view). Output is line-buffered
-with an overflow guard for a line that never ends. An optional per-process log
-file (mode `0o600`) receives the same lines, plain and ANSI-stripped.
-Diagnostics use leveled logging (`--log-level`).
+service store plus a system store for the All view). Colors come from the `theme`
+layer and adapt to the detected background; when stdout isn't a terminal the ANSI
+stream strips all styling. Output is line-buffered with an overflow guard for a
+line that never ends. An optional per-process log file (mode `0o600`) receives
+the same lines, plain and ANSI-stripped. Diagnostics use leveled logging
+(`--log-level`).
 
 ## Exit code
 

@@ -1,23 +1,23 @@
-//! The single place the `anstyle` colors stored on log lines and resolved on
-//! services are mapped to ratatui colors, reused by tab labels and log lines.
+//! The one place stored `anstyle` colors map to ratatui, for tabs and log lines.
 
 use anstyle::{AnsiColor, Color as AnsiStyleColor};
 use ratatui::style::{Color, Modifier, Style};
 
 use crate::logger::{Emphasis, LogLevel};
 use crate::service::ServiceStatus;
+use crate::theme::Theme;
 
-/// The accent color for a service's tab-bar status icon.
-pub fn status_color(status: ServiceStatus) -> Color {
-    match status {
-        ServiceStatus::Running | ServiceStatus::Completed(_) => Color::Green,
-        ServiceStatus::Failed(_) => Color::Red,
-        ServiceStatus::Waiting | ServiceStatus::Stopped => Color::DarkGray,
-    }
+/// A service's status-icon color.
+pub fn status_color(status: ServiceStatus, theme: Theme) -> Color {
+    let accent = match status {
+        ServiceStatus::Running | ServiceStatus::Completed(_) => theme.success(),
+        ServiceStatus::Failed(_) => theme.error(),
+        ServiceStatus::Waiting | ServiceStatus::Stopped => theme.subtle(),
+    };
+    to_ratatui(accent)
 }
 
-/// The ratatui style for a system line at `level`, applying the level's shared
-/// [`Emphasis`] so stream and TUI severity styling can't drift apart.
+/// A system line's style at `level`; shares [`Emphasis`] so stream and TUI can't drift.
 pub fn system_style(level: LogLevel, color: Color) -> Style {
     let style = Style::default().fg(color);
     match level.emphasis() {

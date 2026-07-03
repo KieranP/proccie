@@ -8,6 +8,7 @@ Process manager that runs and supervises multiple processes. Similar to [overmin
 - Automatic retries on failure (configurable per process via `max_retries`)
 - Global/per-process environment variables (either defined inline or imported from file path)
 - Save STDOUT/STDERR to separate log files per process (ANSI color codes stripped)
+- Color-coded per-process output that adapts to your terminal's light/dark background (overridable per process; see [Colors](CONFIG.md#colors))
 
 ## Install
 
@@ -75,6 +76,7 @@ Options:
       --only <NAMES>      comma-separated list of processes to run (with dependencies)
       --except <NAMES>    comma-separated list of processes to exclude
       --log-level <LEVEL> minimum severity to log: debug, info, warn, error (default info)
+      --no-tui            disable the interactive TUI (stream plain prefixed output)
   -h, --help              print help and exit
   -V, --version           print version and exit
 ```

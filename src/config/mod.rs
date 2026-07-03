@@ -14,7 +14,6 @@ use std::time::Duration;
 
 pub use error::{ConfigError, ConfigWarning, ValidationIssue, ValidationIssueKind};
 pub use graph::{Adjacency, dependents, reachable, topo_order};
-pub use parse::parse_color;
 pub use types::{ExitCodes, Process, Readiness, ReadyWhen, parse_duration};
 
 /// Maximum time to wait for a readiness command to succeed before

@@ -1,13 +1,11 @@
 //! A self-contained, UI-agnostic logging subsystem: structured primitives,
-//! capped per-tag stores, a color palette, and the `Logger` writer factory.
+//! capped per-tag stores, and the `Logger` writer factory.
 
-mod color;
 mod level;
 mod line;
 mod store;
 mod writer;
 
-pub use color::PREFIX_COLORS;
 pub use level::{Emphasis, LogLevel};
 pub use line::{LogLine, Source};
 pub use store::{LogStore, MAX_LINES, merge_tail};
@@ -17,13 +15,11 @@ use std::io::{LineWriter, Write};
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
-use anstyle::{AnsiColor, Color};
+use anstyle::Color;
 use tokio::sync::Notify;
 
+use crate::theme::Theme;
 use writer::{Core, Output};
-
-/// Base prefix color for the system writer (its leveled lines color by severity).
-const SYSTEM_COLOR: Color = Color::Ansi(AnsiColor::White);
 
 /// Tag for the logger's own (system) messages.
 const SYSTEM_TAG: &str = "system";
@@ -57,6 +53,7 @@ impl Logger {
         dest: Destination,
         labels: impl IntoIterator<Item = &'a str>,
         level: LogLevel,
+        theme: Theme,
     ) -> Arc<Logger> {
         // Coordination primitives shared by every store this logger mints.
         let clock = Arc::new(AtomicU64::new(0));
@@ -74,13 +71,14 @@ impl Logger {
             out,
             pad_width: prefix_width(labels),
             level,
+            theme,
         });
 
         // The built-in writer for the logger's own messages (no log file).
         let system = TaggedWriter::with_file(
             Arc::clone(&core),
             SYSTEM_TAG,
-            SYSTEM_COLOR,
+            theme.subtle(),
             LogStore::new(Arc::clone(&clock), Arc::clone(&redraw)),
             None,
         );

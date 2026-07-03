@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, HashSet};
 
 use super::error::{ConfigError, ValidationIssue, ValidationIssueKind};
 use super::graph;
-use super::parse::parse_color;
 use super::types::{ExitCodes, Process, Readiness};
+use crate::theme::parse_color;
 
 /// Checks every process for correctness, then detects dependency cycles.
 pub fn validate(procs: &BTreeMap<String, Process>) -> Result<(), ConfigError> {

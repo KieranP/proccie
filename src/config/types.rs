@@ -292,7 +292,7 @@ impl Process {
 
     /// Returns the configured prefix/tab color, if any (parsed; validated at load).
     pub fn color(&self) -> Option<anstyle::Color> {
-        self.color.as_deref().and_then(super::parse::parse_color)
+        self.color.as_deref().and_then(crate::theme::parse_color)
     }
 
     /// Returns when this process releases its dependents; validation

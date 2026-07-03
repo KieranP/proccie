@@ -13,11 +13,13 @@ use std::time::Duration;
 
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyEvent, KeyEventKind};
-use tokio::sync::{mpsc, oneshot};
+use ratatui::layout::Rect;
+use tokio::sync::{Notify, mpsc, oneshot};
 
 use crate::logger::Logger;
 use crate::runner::Runner;
 use crate::service::Service;
+use crate::theme::Theme;
 
 /// Min interval between redraws so a noisy service can't spin the renderer.
 const REDRAW_COALESCE: Duration = Duration::from_millis(16);
@@ -34,10 +36,11 @@ pub async fn run(
     services: &Arc<[Service]>,
     runner: &Runner,
     logger: &Logger,
+    theme: Theme,
     force_delay: Duration,
 ) -> io::Result<i32> {
     let system = Arc::clone(logger.system().store());
-    let mut app = App::new(Arc::clone(services), system, logger.pad_width());
+    let mut app = App::new(Arc::clone(services), system, logger.pad_width(), theme);
 
     // The supervisor runs concurrently; the UI learns the exit code via fin_rx.
     let (fin_tx, fin_rx) = oneshot::channel();
@@ -70,8 +73,9 @@ async fn event_loop(
     force_delay: Duration,
 ) -> io::Result<()> {
     let (key_tx, mut key_rx) = mpsc::channel::<KeyEvent>(256);
-    spawn_key_reader(key_tx);
     let redraw = app.system.redraw();
+    // The reader also wakes the loop on resize, so it can repaint to the new size.
+    spawn_key_reader(key_tx, Arc::clone(&redraw));
     let mut finished = Some(finished_rx);
     let mut last_drawn: Option<(u16, u16, u64)> = None;
     // While `Some`, a redraw burst coalesces until this instant; keys stay responsive.
@@ -79,9 +83,14 @@ async fn event_loop(
 
     loop {
         let size = terminal.size()?;
-        // Tab bar (1) + footer (1) + viewport top/bottom borders (2).
-        app.set_viewport((size.height as usize).saturating_sub(4));
-        app.clamp_scroll();
+        // Viewport geometry from the render layer's layout (one source of truth),
+        // so clamping and paging can't drift from what is drawn.
+        let (inner_width, inner_height) =
+            ui::viewport_size(Rect::new(0, 0, size.width, size.height));
+        app.set_viewport(inner_height);
+        // Clamp the scroll now the width is known (the render layer measures wrapping).
+        let offset = ui::clamp_scroll(app, inner_width, inner_height);
+        app.set_scroll_offset(offset);
         app.mark_seen();
         // Skip the repaint (and its merge/clone work) when nothing visible changed.
         let fingerprint = (size.width, size.height, app.render_fingerprint());
@@ -137,9 +146,9 @@ async fn event_loop(
     }
 }
 
-/// Reads key presses on a dedicated OS thread (blocking `event::read`),
-/// forwarding them to the async loop until the channel closes.
-fn spawn_key_reader(tx: mpsc::Sender<KeyEvent>) {
+/// Reads key presses on a dedicated OS thread (blocking `event::read`) and
+/// forwards them to the async loop; a resize wakes the loop to repaint.
+fn spawn_key_reader(tx: mpsc::Sender<KeyEvent>, redraw: Arc<Notify>) {
     std::thread::spawn(move || {
         loop {
             match event::read() {
@@ -148,6 +157,7 @@ fn spawn_key_reader(tx: mpsc::Sender<KeyEvent>) {
                         break;
                     }
                 }
+                Ok(Event::Resize(_, _)) => redraw.notify_one(),
                 Ok(_) => {}
                 Err(_) => break,
             }

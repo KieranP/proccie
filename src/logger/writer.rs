@@ -11,6 +11,7 @@ use anstyle::{Color, Style};
 
 use super::{LogLevel, LogStore, Source};
 use crate::sync::MutexExt;
+use crate::theme::Theme;
 
 /// Maximum bytes buffered before a forced flush, bounding memory for sources
 /// that emit large output without newlines.
@@ -35,6 +36,7 @@ pub(super) struct Core {
     pub(super) out: Output,
     pub(super) pad_width: usize,
     pub(super) level: LogLevel,
+    pub(super) theme: Theme,
 }
 
 /// Precomputed prefixes/styling for one line category (raw output or a severity
@@ -61,11 +63,11 @@ impl Prefixes {
 
     /// Prefix set for a leveled line: the severity style wraps both the
     /// `tag [LEVEL]` prefix and the content.
-    fn leveled(tag: &str, level: LogLevel, width: usize) -> Prefixes {
+    fn leveled(tag: &str, level: LogLevel, width: usize, theme: Theme) -> Prefixes {
         Prefixes::build(
             &leveled_tag(tag, level),
-            level.style(),
-            level.color(),
+            level.style(theme),
+            level.color(theme),
             width,
             true,
         )
@@ -136,7 +138,8 @@ impl TaggedWriter {
         let base = Prefixes::raw(&tag, color, core.pad_width);
         // One set per level; `emit` indexes by `level as usize`, matching
         // `LogLevel::ALL`'s order.
-        let leveled = LogLevel::ALL.map(|lvl| Prefixes::leveled(&tag, lvl, core.pad_width));
+        let leveled =
+            LogLevel::ALL.map(|lvl| Prefixes::leveled(&tag, lvl, core.pad_width, core.theme));
 
         Arc::new(TaggedWriter {
             core,

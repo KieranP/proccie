@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use proccie::config::Config;
 use proccie::logger::{Destination, LogLevel, Logger};
 use proccie::service::Service;
+use proccie::theme::Theme;
 use tempfile::TempDir;
 
 /// An in-memory writer that can be cloned to share one buffer between a
@@ -56,13 +57,14 @@ pub fn build_logger(labels: &[&str], level: LogLevel) -> (Arc<Logger>, SharedBuf
         Destination::Writer(Box::new(out.clone())),
         labels.iter().copied(),
         level,
+        Theme::Dark,
     );
     (logger, out)
 }
 
 /// Builds the services for `config`, logging via `logger`.
 pub fn build_services(config: &Config, logger: &Logger) -> Arc<[Service]> {
-    Service::build_all(config, &config.adjacency(), logger).expect("build services")
+    Service::build_all(config, &config.adjacency(), logger, Theme::Dark).expect("build services")
 }
 
 /// Writes `content` to a `Procfile.toml` inside a fresh temp directory and

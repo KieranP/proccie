@@ -6,4 +6,5 @@ pub mod logger;
 pub mod runner;
 pub mod service;
 mod sync;
+pub mod theme;
 pub mod tui;
