@@ -48,6 +48,7 @@ Set at the top level, outside any process section.
 | `env_file`    | string          | _(none)_     | dotenv-style file applied to this process only.                                                                                     |
 | `environment` | table           | `{}`         | Inline variables for this process (highest priority).                                                                              |
 | `log_file`    | string          | _(none)_     | Write a plain, ANSI-stripped copy of this process's output here (created/appended), in addition to the console.                     |
+| `name`        | string          | _(section)_  | Display label for the log prefix and TUI tab; the section name stays the identifier used elsewhere. Must be unique.                 |
 | `color`       | string          | _(auto)_     | Overrides the auto-assigned prefix/tab color: a named ANSI color or `#rrggbb` hex. See [Colors](#colors).                          |
 | `max_retries` | int             | `0`          | Restarts after an unexpected exit before giving up and shutting down. `0` (default) disables retries. Incompatible with `readiness`. |
 
