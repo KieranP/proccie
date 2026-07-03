@@ -3,7 +3,8 @@
 
 mod app;
 mod color;
-mod ui;
+mod search;
+mod view;
 
 pub use app::App;
 
@@ -86,16 +87,16 @@ async fn event_loop(
         // Viewport geometry from the render layer's layout (one source of truth),
         // so clamping and paging can't drift from what is drawn.
         let (inner_width, inner_height) =
-            ui::viewport_size(Rect::new(0, 0, size.width, size.height));
+            view::viewport_size(Rect::new(0, 0, size.width, size.height));
         app.set_viewport(inner_height);
         // Clamp the scroll now the width is known (the render layer measures wrapping).
-        let offset = ui::clamp_scroll(app, inner_width, inner_height);
+        let offset = view::clamp_scroll(app, inner_width, inner_height);
         app.set_scroll_offset(offset);
         app.mark_seen();
         // Skip the repaint (and its merge/clone work) when nothing visible changed.
         let fingerprint = (size.width, size.height, app.render_fingerprint());
         if last_drawn != Some(fingerprint) {
-            terminal.draw(|frame| ui::render(frame, app))?;
+            terminal.draw(|frame| view::render(frame, app))?;
             last_drawn = Some(fingerprint);
         }
         // A received signal terminates proccie even while sitting open for review.

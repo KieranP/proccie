@@ -12,6 +12,8 @@ use crate::service::Service;
 
 use crate::theme::Theme;
 
+use super::search::{Search, SearchAction};
+
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// A tab in the view: the combined All view, or one service (by index).
@@ -58,6 +60,9 @@ pub struct App {
     global_stopped: bool,
     /// Whether the user asked to quit proccie (all services already down).
     quit_requested: bool,
+    /// The log search: an open editing box or a committed filter; `None` when
+    /// there is no search. A non-empty query filters the active tab.
+    search: Option<Search>,
 }
 
 impl App {
@@ -94,6 +99,7 @@ impl App {
             finished: None,
             global_stopped: false,
             quit_requested: false,
+            search: None,
         }
     }
 
@@ -105,6 +111,40 @@ impl App {
     /// Whether the user has asked to quit and proccie is finishing teardown.
     pub fn is_exiting(&self) -> bool {
         self.quit_requested
+    }
+
+    /// The active filter: a non-empty query, whether being edited or committed.
+    pub fn filter_query(&self) -> Option<&str> {
+        self.search.as_ref().and_then(Search::filter_query)
+    }
+
+    /// The query and cursor while the box is open for editing (for its footer).
+    pub(crate) fn search_editing(&self) -> Option<(&str, usize)> {
+        self.search
+            .as_ref()
+            .filter(|s| s.is_editing())
+            .map(|s| (s.query(), s.cursor()))
+    }
+
+    /// A committed, still-applied filter with the box shut (for its footer).
+    pub(crate) fn search_committed(&self) -> Option<&str> {
+        self.search
+            .as_ref()
+            .filter(|s| !s.is_editing())
+            .and_then(Search::filter_query)
+    }
+
+    /// The query while the box is open for editing (empty string included).
+    pub fn search_input(&self) -> Option<&str> {
+        self.search
+            .as_ref()
+            .filter(|s| s.is_editing())
+            .map(Search::query)
+    }
+
+    /// Whether the search box is open and capturing keystrokes.
+    fn is_editing_search(&self) -> bool {
+        self.search.as_ref().is_some_and(Search::is_editing)
     }
 
     /// Records the runner's exit code; quits now if the user already asked to.
@@ -203,6 +243,8 @@ impl App {
         // Footer state, so a stop/quit repaints even before any service reacts.
         self.global_stopped.hash(&mut h);
         self.quit_requested.hash(&mut h);
+        // The search query: editing it repaints the footer and refilters the view.
+        self.search.hash(&mut h);
         self.tabs.len().hash(&mut h);
         // Tab bar: each service's status icon and unread mark.
         for svc in self.services.iter() {
@@ -282,10 +324,20 @@ impl App {
     /// the caller should arm a forced hard-exit (a repeat quit while tearing down).
     pub fn handle_key(&mut self, key: KeyEvent, runner: &Runner) -> bool {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        // Ctrl+C always drives shutdown, even with the search box open.
+        if ctrl && matches!(key.code, KeyCode::Char('c')) {
+            return self.handle_ctrl_c(runner);
+        }
+        // While editing, most keys edit the query; navigation falls through.
+        if self.is_editing_search() && self.edit_search(key) {
+            return false;
+        }
         match key.code {
-            KeyCode::Char('c') if ctrl => return self.handle_ctrl_c(runner),
             KeyCode::Char('q') => self.request_quit(runner),
             KeyCode::Char('c') => self.close_active(),
+            KeyCode::Char('s') => self.open_search(),
+            // Esc clears a committed filter (an editing box handles its own Esc).
+            KeyCode::Esc => self.clear_search(),
             // Some terminals send Shift+Tab as Tab+SHIFT rather than BackTab.
             KeyCode::Tab if key.modifiers.contains(KeyModifiers::SHIFT) => self.prev_tab(),
             KeyCode::BackTab => self.prev_tab(),
@@ -299,6 +351,47 @@ impl App {
             _ => {}
         }
         false
+    }
+
+    /// Opens the search box, carrying over a committed query so `s` re-edits it,
+    /// and follows the newest matches.
+    fn open_search(&mut self) {
+        let query = self
+            .search
+            .take()
+            .map(Search::into_query)
+            .unwrap_or_default();
+        self.search = Some(Search::editing(query));
+        self.scroll_end();
+    }
+
+    /// Clears any search (a committed filter) and returns to the live tail.
+    fn clear_search(&mut self) {
+        if self.search.take().is_some() {
+            self.scroll_end();
+        }
+    }
+
+    /// Routes one key to the open box and applies its request. Returns whether
+    /// the key was consumed (else it falls through so scrolling still works).
+    fn edit_search(&mut self, key: KeyEvent) -> bool {
+        let action = self
+            .search
+            .as_mut()
+            .map_or(SearchAction::Pass, |search| search.edit(key));
+        match action {
+            SearchAction::Pass => false,
+            SearchAction::Handled => true,
+            SearchAction::Refilter => {
+                self.scroll_end();
+                true
+            }
+            SearchAction::Close => {
+                self.search = None;
+                self.scroll_end();
+                true
+            }
+        }
     }
 
     /// Sets the active tab's scroll offset, deriving follow (offset 0 == tail).
@@ -354,5 +447,13 @@ impl App {
             self.quit = true;
         }
         false
+    }
+}
+
+#[cfg(test)]
+impl App {
+    /// Opens the search box pre-filled with `query`, for render tests.
+    pub fn search_for_test(&mut self, query: &str) {
+        self.search = Some(Search::editing(query.to_string()));
     }
 }

@@ -66,7 +66,7 @@ src/theme/             terminal light/dark detection, per-background colors, col
 src/logger/            UI-agnostic logging: per-tag writers over a stream or LogStore
 src/service/           per-service object (key, config, color, status, own log store)
 src/runner/            orchestrator (mod) + per-process lifecycle, readiness, deps
-src/tui/               ratatui terminal UI (app state, rendering, event loop)
+src/tui/               ratatui terminal UI (app state, rendering, log search, event loop)
 tests/                 integration tests (config, logging, router, runner, tui, CLI)
 ```
 

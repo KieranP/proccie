@@ -8,7 +8,9 @@ mod writer;
 
 pub use level::{Emphasis, LogLevel};
 pub use line::{LogLine, Source};
-pub use store::{LogStore, MAX_LINES, merge_tail};
+pub use store::{
+    LogStore, MAX_LINES, merge_tail, merge_tail_matching, query_is_case_sensitive, text_matches,
+};
 pub use writer::{MAX_LINE_BUFFER, TaggedWriter, leveled_tag, line_prefix};
 
 use std::io::{LineWriter, Write};

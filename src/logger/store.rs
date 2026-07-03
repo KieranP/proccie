@@ -97,6 +97,29 @@ impl LogStore {
             .collect()
     }
 
+    /// Counts buffered lines whose text matches `needle` (see [`text_matches`]).
+    pub fn count_matching(&self, needle: &str, case_sensitive: bool) -> usize {
+        self.lock()
+            .iter()
+            .filter(|line| text_matches(&line.text, needle, case_sensitive))
+            .count()
+    }
+
+    /// Clones the last `depth` lines matching `needle` (oldest first), scanning
+    /// newest-first so a filtered tail need not clone the whole buffer.
+    pub fn tail_matching(&self, depth: usize, needle: &str, case_sensitive: bool) -> Vec<LogLine> {
+        let lines = self.lock();
+        let mut matched: Vec<LogLine> = lines
+            .iter()
+            .rev()
+            .filter(|line| text_matches(&line.text, needle, case_sensitive))
+            .take(depth)
+            .cloned()
+            .collect();
+        matched.reverse();
+        matched
+    }
+
     /// Number of currently buffered (non-evicted) lines.
     pub fn len(&self) -> usize {
         self.lock().len()
@@ -137,4 +160,44 @@ pub fn merge_tail<'a>(
         .collect();
     merged.sort_by_key(|line| line.seq);
     merged
+}
+
+/// Merges the last `depth` lines matching `needle` across `stores` by `seq`. A
+/// global match lies within its own store's last `depth`, so only those clone.
+pub fn merge_tail_matching<'a>(
+    stores: impl IntoIterator<Item = &'a Arc<LogStore>>,
+    depth: usize,
+    needle: &str,
+    case_sensitive: bool,
+) -> Vec<LogLine> {
+    let mut merged: Vec<LogLine> = stores
+        .into_iter()
+        .flat_map(|s| s.tail_matching(depth, needle, case_sensitive))
+        .collect();
+    merged.sort_by_key(|line| line.seq);
+    let start = merged.len().saturating_sub(depth);
+    merged.drain(..start);
+    merged
+}
+
+/// Allocation-free substring test; `case_sensitive` picks exact vs ASCII-fold.
+/// An empty needle matches everything (an in-progress search shows all lines).
+pub fn text_matches(haystack: &str, needle: &str, case_sensitive: bool) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    let needle = needle.as_bytes();
+    haystack.as_bytes().windows(needle.len()).any(|window| {
+        if case_sensitive {
+            window == needle
+        } else {
+            window.eq_ignore_ascii_case(needle)
+        }
+    })
+}
+
+/// Smart case: a query matches case-sensitively once it contains an uppercase
+/// ASCII letter, and case-insensitively otherwise (the ripgrep/less default).
+pub fn query_is_case_sensitive(query: &str) -> bool {
+    query.bytes().any(|b| b.is_ascii_uppercase())
 }

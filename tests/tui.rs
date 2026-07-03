@@ -69,6 +69,16 @@ fn q_key() -> KeyEvent {
     KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)
 }
 
+/// An unmodified character key event.
+fn char_key(c: char) -> KeyEvent {
+    KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+}
+
+/// A bare key event for a non-character key (Enter, Esc, arrows, …).
+fn key(code: KeyCode) -> KeyEvent {
+    KeyEvent::new(code, KeyModifiers::NONE)
+}
+
 const TWO: &str = "[a]\ncommand = \"true\"\n[b]\ncommand = \"true\"\n";
 
 /// Pushes one line into a service's store (advancing its `total`).
@@ -257,6 +267,144 @@ async fn q_stops_services_then_exits_once_they_are_down() {
     svc[1].set_status(ServiceStatus::Stopped);
     app.on_runner_finished(Some(0));
     assert!(app.quit);
+}
+
+#[test]
+fn search_box_opens_edits_and_commits() {
+    let (mut app, _svc, runner) = build_app_runner(TWO);
+    assert!(app.search_input().is_none());
+
+    // `s` opens an empty box: it filters nothing until a query is typed.
+    app.handle_key(char_key('s'), &runner);
+    assert_eq!(app.search_input(), Some(""));
+    assert!(app.filter_query().is_none());
+
+    // Printable keys build the query — including ones that are commands normally.
+    app.handle_key(char_key('q'), &runner);
+    app.handle_key(char_key('x'), &runner);
+    assert_eq!(app.search_input(), Some("qx"));
+    assert_eq!(app.filter_query(), Some("qx"));
+    assert!(!app.is_exiting(), "'q' typed into the box must not quit");
+
+    // Enter commits: the box closes but the filter stays applied.
+    app.handle_key(key(KeyCode::Enter), &runner);
+    assert!(app.search_input().is_none(), "editor closed after commit");
+    assert_eq!(app.filter_query(), Some("qx"), "filter still applied");
+
+    // `s` reopens editing on the committed query; Esc then clears everything.
+    app.handle_key(char_key('s'), &runner);
+    assert_eq!(app.search_input(), Some("qx"));
+    app.handle_key(key(KeyCode::Esc), &runner);
+    assert!(app.search_input().is_none());
+    assert!(app.filter_query().is_none());
+}
+
+#[test]
+fn search_query_supports_cursor_editing() {
+    let (mut app, _svc, runner) = build_app_runner(TWO);
+    app.handle_key(char_key('s'), &runner);
+    for c in "abd".chars() {
+        app.handle_key(char_key(c), &runner);
+    }
+    assert_eq!(app.filter_query(), Some("abd"));
+
+    // Left once (before 'd'), insert 'c' → "abcd".
+    app.handle_key(key(KeyCode::Left), &runner);
+    app.handle_key(char_key('c'), &runner);
+    assert_eq!(app.filter_query(), Some("abcd"));
+
+    // Home then Delete drops the first char → "bcd"; Backspace at the start no-ops.
+    app.handle_key(key(KeyCode::Home), &runner);
+    app.handle_key(key(KeyCode::Delete), &runner);
+    assert_eq!(app.filter_query(), Some("bcd"));
+    app.handle_key(key(KeyCode::Backspace), &runner);
+    assert_eq!(app.filter_query(), Some("bcd"));
+}
+
+#[test]
+fn cmd_arrows_jump_to_the_ends_of_the_query() {
+    let (mut app, _svc, runner) = build_app_runner(TWO);
+    app.handle_key(char_key('s'), &runner);
+    for c in "bcd".chars() {
+        app.handle_key(char_key(c), &runner);
+    }
+
+    // Cmd+Left jumps to the front; typing there prepends.
+    app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::SUPER), &runner);
+    app.handle_key(char_key('a'), &runner);
+    assert_eq!(app.filter_query(), Some("abcd"));
+
+    // Cmd+Right jumps to the end; typing there appends.
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::SUPER), &runner);
+    app.handle_key(char_key('e'), &runner);
+    assert_eq!(app.filter_query(), Some("abcde"));
+}
+
+#[test]
+fn readline_combos_jump_to_the_ends_of_the_query() {
+    let (mut app, _svc, runner) = build_app_runner(TWO);
+    app.handle_key(char_key('s'), &runner);
+    for c in "bcd".chars() {
+        app.handle_key(char_key(c), &runner);
+    }
+
+    // Ctrl+A jumps to the front; typing there prepends.
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
+        &runner,
+    );
+    app.handle_key(char_key('a'), &runner);
+    assert_eq!(app.filter_query(), Some("abcd"));
+
+    // Ctrl+E jumps to the end; typing there appends.
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL),
+        &runner,
+    );
+    app.handle_key(char_key('e'), &runner);
+    assert_eq!(app.filter_query(), Some("abcde"));
+}
+
+#[tokio::test]
+async fn committed_filter_lets_commands_through_and_esc_clears() {
+    let (mut app, _svc, runner) = build_app_runner(TWO);
+    app.handle_key(char_key('s'), &runner);
+    app.handle_key(char_key('x'), &runner);
+    app.handle_key(key(KeyCode::Enter), &runner); // commit "x"
+    assert_eq!(app.filter_query(), Some("x"));
+
+    // With the box shut, `q` is a command again (not typed into the query).
+    app.handle_key(q_key(), &runner);
+    assert!(
+        app.is_exiting(),
+        "'q' should quit once the filter is committed"
+    );
+
+    // Esc clears the committed filter.
+    app.handle_key(key(KeyCode::Esc), &runner);
+    assert!(app.filter_query().is_none());
+}
+
+#[tokio::test]
+async fn search_box_lets_ctrl_c_and_navigation_through() {
+    let (mut app, svc, runner) = build_app_runner(TWO);
+    app.handle_key(char_key('s'), &runner); // box open, active tab is All
+
+    // Ctrl+C still drives shutdown rather than typing 'c' into the query.
+    svc[0].set_status(ServiceStatus::Running);
+    svc[1].set_status(ServiceStatus::Running);
+    app.handle_key(ctrl_c(), &runner);
+    assert!(app.is_shutting_down());
+    assert_eq!(
+        app.search_input(),
+        Some(""),
+        "Ctrl+C must not edit the query"
+    );
+
+    // Tab still switches tabs while the box is open (navigation falls through).
+    let before = app.active();
+    app.handle_key(key(KeyCode::Tab), &runner);
+    assert_ne!(app.active(), before);
 }
 
 #[test]

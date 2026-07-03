@@ -19,7 +19,8 @@ Domain layers that depend downward only:
   in terms of `Service`.
 - **`runner`** — orchestration (`mod`), per-process execution (`lifecycle`),
   readiness polling (`readiness`), and dependency signalling (`deps`).
-- **`tui`** — ratatui terminal UI: tab state (`app`), rendering (`ui`), and the
+- **`tui`** — ratatui terminal UI: tab state (`app`), the log-search box
+  (`search`), rendering split by region (`view::{tabs, viewport, footer}`), and the
   event loop (`mod`).
 
 ## Startup
@@ -98,6 +99,14 @@ stream strips all styling. Output is line-buffered with an overflow guard for a
 line that never ends. An optional per-process log file (mode `0o600`) receives
 the same lines, plain and ANSI-stripped. Diagnostics use leveled logging
 (`--log-level`).
+
+## Search
+
+The TUI's search box (`s`) filters the active tab to lines matching the query,
+smart-case (case-sensitive once it contains an uppercase letter). The store
+scans newest-first and clones only the last screenful of matching lines
+(`tail_matching` / `merge_tail_matching`), so filtering never copies the whole
+buffer. A committed filter (via `Enter`) stays applied with the box closed.
 
 ## Exit code
 

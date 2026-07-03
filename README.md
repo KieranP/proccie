@@ -101,6 +101,30 @@ proccie --except worker   # run everything except worker
 proccie validate          # check the config without running it
 ```
 
+## Interactive UI
+
+When stdout is a TTY (and `--no-tui` isn't set), proccie shows a tabbed log
+viewer: an **All** tab merging every process's output, plus one color-coded tab
+per process with a status icon and an unread-output dot.
+
+| Key                                     | Action                                                        |
+| --------------------------------------- | ------------------------------------------------------------- |
+| `Tab` / `⇧Tab`                          | switch tabs                                                   |
+| `↑` `↓` / `PgUp` `PgDn` / `Home` `End`  | scroll the log                                                |
+| `s`                                     | search the active tab (see below)                             |
+| `c`                                     | close a completed process's tab                               |
+| `Ctrl+C`                                | stop the focused process (all, on the All tab); again force-kills |
+| `q`                                     | stop everything and quit                                      |
+
+### Search
+
+Press `s` to filter the active tab to lines containing your query, with matches
+highlighted. Search is **smart-case**: case-insensitive until the query contains
+an uppercase letter. `Enter` keeps the filter applied with the box closed (press
+`s` to edit it again); `Esc` clears it. While typing, move within the query with
+the arrow keys and `Home`/`End`, and jump to its ends with `Ctrl+A`/`Ctrl+E` (or
+`Cmd`+←/→).
+
 ## Shutdown behavior
 
 On the first `Ctrl-C` (or `SIGTERM`), proccie sends `SIGTERM` to every process

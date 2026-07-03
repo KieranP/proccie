@@ -15,7 +15,7 @@ Rust (stable, 1.95+) process manager on Tokio. Build/test/lint: [DEVELOP.md](DEV
 - `src/logger/` -- domain-free logging: per-tag writers over an ANSI stream or a store
 - `src/service/` -- per-service object: config, color, `ServiceStatus`, log store
 - `src/runner/` -- orchestration + execution: start order, shutdown, spawn, output pump, readiness, retries
-- `src/tui/` -- ratatui UI: tabs, rendering, event loop
+- `src/tui/` -- ratatui UI: tabs, rendering (`view/`), log search, event loop
 
 ## Conventions
 
