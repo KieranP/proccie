@@ -1,5 +1,8 @@
 //! Command-line entry point for proccie.
 
+// No panics.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
+
 use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::sync::Arc;

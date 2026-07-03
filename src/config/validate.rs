@@ -23,7 +23,7 @@ pub fn validate(procs: &BTreeMap<String, Process>) -> Result<(), ConfigError> {
     }
 }
 
-/// Collects validation issues for one process: required command, exit_codes /
+/// Collects validation issues for one process: required command, `exit_codes` /
 /// readiness rules, dependency sanity, and retry count.
 fn validate_process(
     name: &str,

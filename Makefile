@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: build test fmt fmt-check clippy check clean install help
+.PHONY: build test fmt fmt-check lint audit check clean install install-hooks help
 
 build: ## Build the release binary to target/release/proccie
 	cargo build --release
@@ -14,16 +14,22 @@ fmt: ## Format the code
 fmt-check: ## Check formatting without modifying files
 	cargo fmt --check
 
-clippy: ## Run clippy (lints as errors)
+lint: ## Run clippy (lints as errors)
 	cargo clippy --all-targets -- -D warnings
 
-check: fmt-check clippy test ## Run formatting check, clippy, and tests
+audit: ## Scan dependencies for security advisories (needs cargo-audit)
+	cargo audit
+
+check: fmt-check lint test ## Run formatting check, clippy, and tests
 
 clean: ## Remove build artifacts
 	cargo clean
 
 install: ## Install proccie to ~/.cargo/bin
 	cargo install --path .
+
+install-hooks: ## Enable the pre-commit hook (runs make check)
+	git config core.hooksPath .githooks
 
 help: ## Show this help
 	@grep -E '^[a-z][a-zA-Z0-9_-]+:.*##' $(MAKEFILE_LIST) | \

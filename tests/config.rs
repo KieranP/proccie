@@ -537,13 +537,13 @@ depends_on = ["b"]
 #[test]
 fn reports_multiple_errors() {
     let err = load_err(
-        r#"
+        r"
 [web]
 exit_codes = [0]
 
 [worker]
 exit_codes = [0]
-"#,
+",
     );
     assert!(err.contains("web") && err.contains("worker"), "{err}");
 }

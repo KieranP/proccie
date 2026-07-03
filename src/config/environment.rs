@@ -24,7 +24,7 @@ pub fn resolve(
     let mut base = base_env;
     apply_layer(
         &mut base,
-        &parsed.global_env_file,
+        parsed.global_env_file.as_deref(),
         &parsed.global_env,
         "top-level".to_owned(),
         config_dir,
@@ -35,7 +35,7 @@ pub fn resolve(
         let mut env = base.clone();
         apply_layer(
             &mut env,
-            &proc.env_file,
+            proc.env_file.as_deref(),
             &proc.environment,
             format!("process {name:?}"),
             config_dir,
@@ -50,7 +50,7 @@ pub fn resolve(
 /// `environment` entries. `scope` names the layer in env-file errors.
 fn apply_layer(
     env: &mut BTreeMap<String, String>,
-    env_file: &Option<String>,
+    env_file: Option<&str>,
     environment: &BTreeMap<String, String>,
     scope: String,
     config_dir: &Path,
@@ -70,8 +70,8 @@ fn apply_layer(
 
 /// Treats an absent or empty `env_file` path as "unset", so an explicit
 /// `env_file = ""` is ignored rather than read as a (missing) file.
-fn non_empty(path: &Option<String>) -> Option<&str> {
-    path.as_deref().filter(|p| !p.is_empty())
+fn non_empty(path: Option<&str>) -> Option<&str> {
+    path.filter(|p| !p.is_empty())
 }
 
 /// Reads a dotenv-style file into a map without mutating the process

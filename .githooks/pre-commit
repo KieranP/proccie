@@ -1,0 +1,4 @@
+#!/bin/sh
+# Enforce formatting, lints, and tests before a commit lands.
+# Bypass with `git commit --no-verify` when necessary.
+exec make check

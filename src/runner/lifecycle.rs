@@ -124,10 +124,10 @@ impl Shared {
                 return;
             }
 
-            match self.run_once(svc, running, attempt as u64).await {
+            match self.run_once(svc, running, attempt.cast_unsigned()).await {
                 RunResult::Expected | RunResult::Shutdown => return,
                 // An unexpected exit — clean or not — is retried while attempts remain.
-                RunResult::Completed | RunResult::Failed(_) if attempt < max_attempts => continue,
+                RunResult::Completed | RunResult::Failed(_) if attempt < max_attempts => {}
                 // Retries exhausted: the success/failure split was settled at exit.
                 RunResult::Completed => {
                     self.complete_terminally(svc);
@@ -172,7 +172,7 @@ impl Shared {
         let name = svc.key();
         self.system
             .info(format!("starting {name}: {}", proc.command));
-        let (mut child, output) = match self.spawn_child(proc) {
+        let (mut child, output) = match Self::spawn_child(proc) {
             Ok(pair) => pair,
             Err(e) => {
                 self.system.error(format!("failed to start {name}: {e}"));
@@ -187,9 +187,9 @@ impl Shared {
                 .error(format!("failed to start {name}: spawned child has no pid"));
             return RunResult::Failed(1);
         };
-        let pgid = Pid::from_raw(pid as i32);
+        let group = Pid::from_raw(pid.cast_signed());
         // register_group marks the service Running under the state lock, so a racing stop isn't lost.
-        self.register_group(svc, pgid);
+        self.register_group(svc, group);
         set_liveness(running, Some(incarnation));
 
         // One pump drains the shared pipe in write order; `read` counts bytes for the drain.
@@ -228,7 +228,7 @@ impl Shared {
 
     /// Spawns the command in its own process group (pgid == pid); stdout and stderr
     /// share one pipe so interleaved lines keep write order. Returns the pipe's read end.
-    fn spawn_child(&self, proc: &Process) -> std::io::Result<(Child, pipe::Receiver)> {
+    fn spawn_child(proc: &Process) -> std::io::Result<(Child, pipe::Receiver)> {
         let (tx, rx) = pipe::pipe()?;
         let stdout = tx.into_blocking_fd()?;
         let stderr = stdout.try_clone()?;

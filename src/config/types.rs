@@ -55,7 +55,7 @@ impl<'de> Deserialize<'de> for DurationValue {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct DurationVisitor;
 
-        impl<'de> Visitor<'de> for DurationVisitor {
+        impl Visitor<'_> for DurationVisitor {
             type Value = DurationValue;
 
             fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -144,7 +144,7 @@ impl<'de> Deserialize<'de> for Readiness {
                         "output" => output = Some(map.next_value()?),
                         // Zero is a valid immediate-ready delay, so keep it rather than dropping it.
                         "delay" => {
-                            delay = Some(map.next_value::<DurationValue>()?.0.unwrap_or_default())
+                            delay = Some(map.next_value::<DurationValue>()?.0.unwrap_or_default());
                         }
                         // Reject unknown keys so typos surface instead of being ignored.
                         _ => {

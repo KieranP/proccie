@@ -35,6 +35,12 @@ toml = "1"
 anstyle = "1"
 tempfile = "3"
 
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Too aggressive for our getters / terse docs.
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+
 [profile.release]
 strip = true
 lto = true

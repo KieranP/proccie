@@ -254,7 +254,7 @@ impl TaggedWriter {
 
         self.emit_to_file(p, level, lines.clone());
         match &self.core.out {
-            Output::Stream(out) => self.emit_to_stream(out, p, lines),
+            Output::Stream(out) => Self::emit_to_stream(out, p, lines),
             Output::Store => self.emit_to_store(p, level, lines),
         }
     }
@@ -281,7 +281,6 @@ impl TaggedWriter {
 
     /// Writes a colored, prefixed batch to the ANSI stream in a single write.
     fn emit_to_stream<'a>(
-        &self,
         out: &Mutex<Box<dyn Write + Send>>,
         p: &Prefixes,
         lines: impl Iterator<Item = &'a [u8]>,

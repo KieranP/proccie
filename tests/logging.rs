@@ -35,7 +35,7 @@ fn buffer_caps_and_front_evicts_keeping_total() {
 
     assert_eq!(s.len(), MAX_LINES);
     // `total` is eviction-stable, driving the unread mark.
-    assert_eq!(s.total() as usize, MAX_LINES + extra);
+    assert_eq!(usize::try_from(s.total()).unwrap(), MAX_LINES + extra);
 
     let lines = s.tail(usize::MAX);
     assert_eq!(lines.first().unwrap().text, format!("line {extra}"));

@@ -157,7 +157,7 @@ fn render_viewport(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         .borders(Borders::ALL)
         .title(tab_title(app, app.active_tab()));
     // Skip the overshoot above the window; the rows below it are clipped.
-    let scroll_y = rows.saturating_sub(needed).min(u16::MAX as usize) as u16;
+    let scroll_y = u16::try_from(rows.saturating_sub(needed)).unwrap_or(u16::MAX);
     let paragraph = Paragraph::new(lines)
         .block(block)
         .wrap(Wrap { trim: false })

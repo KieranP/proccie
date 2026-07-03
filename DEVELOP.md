@@ -6,6 +6,7 @@ How to build, test, and lint proccie locally.
 
 - **Rust 1.95+** (stable) -- install via [rustup](https://rustup.rs/).
   - `rustfmt` and `clippy` components: `rustup component add rustfmt clippy`
+  - `cargo-audit` (for `make audit`): `cargo install cargo-audit`
 
 ## Make targets
 
@@ -17,10 +18,12 @@ Run `make` (or `make help`) to see all available targets:
 | `test`      | Run all tests                            |
 | `fmt`       | Format the code                          |
 | `fmt-check` | Check formatting without modifying files |
-| `clippy`    | Run clippy with warnings denied          |
+| `lint`      | Run clippy with warnings denied          |
+| `audit`     | Scan dependencies for security advisories |
 | `check`     | Run fmt-check, clippy, and tests         |
 | `clean`     | Remove build artifacts                   |
 | `install`   | Install proccie to `~/.cargo/bin`        |
+| `install-hooks` | Enable the pre-commit hook           |
 | `help`      | Show available targets                   |
 
 The same commands work directly through Cargo:
@@ -31,6 +34,17 @@ cargo test                      # run unit + integration tests
 cargo clippy --all-targets      # lint
 cargo fmt                       # format
 ```
+
+## Git hooks
+
+A tracked `pre-commit` hook in `.githooks/` runs `make check` (fmt-check, lint,
+tests) before each commit. Enable it once per clone:
+
+```sh
+make install-hooks              # git config core.hooksPath .githooks
+```
+
+Bypass a single commit with `git commit --no-verify`.
 
 ## Versioning
 

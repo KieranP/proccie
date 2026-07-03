@@ -30,7 +30,7 @@ pub struct Scroll {
 
 impl Scroll {
     /// Whether the view is pinned to the tail (newest lines).
-    pub fn is_following(&self) -> bool {
+    pub fn is_following(self) -> bool {
         self.offset_from_bottom == 0
     }
 }

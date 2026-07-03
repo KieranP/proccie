@@ -18,9 +18,9 @@ use common::{SharedBuf, build_logger, build_services, wait_for_output, write_con
 const TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Wraps a loaded config in a runner with test defaults, capturing its log output.
-fn build_runner(config: Config) -> (Runner, SharedBuf) {
+fn build_runner(config: &Config) -> (Runner, SharedBuf) {
     let (logger, out) = build_logger(&config.names(), LogLevel::Debug);
-    let services = build_services(&config, &logger);
+    let services = build_services(config, &logger);
     let runner = Runner::new(
         services,
         config.adjacency(),
@@ -35,7 +35,7 @@ fn build_runner(config: Config) -> (Runner, SharedBuf) {
 fn make_runner(content: &str) -> (Runner, SharedBuf, TempDir) {
     let (dir, path) = write_config(content);
     let config = Config::load(&path).expect("config loads");
-    let (runner, out) = build_runner(config);
+    let (runner, out) = build_runner(&config);
     (runner, out, dir)
 }
 
@@ -860,7 +860,7 @@ async fn run_filtered(content: &str, only: &[&str], except: &[&str]) -> String {
     let except: Vec<String> = except.iter().map(|s| (*s).to_owned()).collect();
     config.filter(&only, &except).unwrap();
 
-    let (runner, out) = build_runner(config);
+    let (runner, out) = build_runner(&config);
     runner.run().await;
     drop(dir);
     out.contents()
