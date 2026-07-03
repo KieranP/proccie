@@ -1,7 +1,7 @@
 //! Command-line entry point for proccie.
 
 use std::io::IsTerminal;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -74,11 +74,16 @@ async fn run() -> i32 {
         Err(e) => return fail(&e),
     };
 
+    let config = match Config::load(&config_path) {
+        Ok(config) => config,
+        Err(e) => return fail(&e),
+    };
+
     if let Some(Command::Validate) = cli.command {
-        return validate(&config_path);
+        return validate(&config);
     }
 
-    let config = match load_runnable_config(&cli, &config_path) {
+    let config = match runnable_config(config, &cli) {
         Ok(config) => config,
         Err(code) => return code,
     };
@@ -137,30 +142,21 @@ async fn run() -> i32 {
     code
 }
 
-/// Loads the config and reports whether it is valid.
-fn validate(path: &Path) -> i32 {
-    match Config::load(path) {
-        Ok(config) => {
-            warn_all(&config);
-            println!(
-                "{}: valid ({} process(es): {})",
-                path.display(),
-                config.processes().len(),
-                config.names().join(", "),
-            );
-            0
-        }
-        Err(e) => fail(&e),
-    }
+/// Reports whether the already-loaded config is valid.
+fn validate(config: &Config) -> i32 {
+    warn_all(config);
+    println!(
+        "{}: valid ({} process(es): {})",
+        config.file_path().display(),
+        config.processes().len(),
+        config.names().join(", "),
+    );
+    0
 }
 
-/// Loads the config and applies CLI filters, returning the runnable process
+/// Applies CLI filters to the loaded config, returning the runnable process
 /// set or the exit code to fail with.
-fn load_runnable_config(cli: &Cli, path: &Path) -> Result<Config, i32> {
-    let mut config = match Config::load(path) {
-        Ok(config) => config,
-        Err(e) => return Err(fail(&e)),
-    };
+fn runnable_config(mut config: Config, cli: &Cli) -> Result<Config, i32> {
     if let Err(e) = config.filter(
         &non_empty_trimmed(&cli.only),
         &non_empty_trimmed(&cli.except),
@@ -169,7 +165,10 @@ fn load_runnable_config(cli: &Cli, path: &Path) -> Result<Config, i32> {
     }
 
     if config.processes().is_empty() {
-        eprintln!("error: no processes defined in {}", path.display());
+        eprintln!(
+            "error: no processes defined in {}",
+            config.file_path().display()
+        );
         return Err(1);
     }
     Ok(config)

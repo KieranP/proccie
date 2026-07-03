@@ -48,6 +48,8 @@ pub struct Config {
     /// Private so mutation stays inside `Config`, preserving the validated
     /// invariants (no cycles, no dangling deps); read via [`Config::processes`].
     processes: BTreeMap<String, Process>,
+    /// The file this config was loaded from; read via [`Config::file_path`].
+    file_path: PathBuf,
 }
 
 impl Config {
@@ -87,7 +89,10 @@ impl Config {
         validate::validate(&parsed.processes)?;
         let processes = environment::resolve(parsed, base_env, config_dir)?;
 
-        Ok(Config { processes })
+        Ok(Config {
+            processes,
+            file_path: path.to_path_buf(),
+        })
     }
 
     /// Builds the `name -> depends_on` adjacency map for graph traversal.
@@ -98,6 +103,11 @@ impl Config {
     /// Returns the processes, keyed by name in alphabetical order.
     pub fn processes(&self) -> &BTreeMap<String, Process> {
         &self.processes
+    }
+
+    /// The file this config was loaded from.
+    pub fn file_path(&self) -> &Path {
+        &self.file_path
     }
 
     /// Non-fatal concerns: a depended-on process with no readiness signal
