@@ -8,7 +8,7 @@ use std::time::Duration;
 use clap::{Parser, Subcommand};
 use tokio::signal::unix::{Signal, SignalKind, signal};
 
-use proccie::config::{Config, parse_duration};
+use proccie::config::{self, Config, parse_duration};
 use proccie::logger::{Destination, LogLevel, Logger, TaggedWriter};
 use proccie::runner::Runner;
 use proccie::service::Service;
@@ -22,9 +22,10 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[derive(Parser)]
 #[command(name = "proccie", version, about, long_about = None)]
 struct Cli {
-    /// Path to the TOML config file.
-    #[arg(short = 'f', long = "config", default_value = "Procfile.toml")]
-    config: PathBuf,
+    /// Path to the config file. A `.toml` file is TOML; anything else is the
+    /// plain Procfile format. Defaults to Procfile.toml, then Procfile.
+    #[arg(short = 'f', long = "config")]
+    config: Option<PathBuf>,
 
     /// Shutdown timeout before SIGKILL (e.g. `10s`, `500ms`).
     #[arg(short = 't', long, default_value = "10s", value_parser = parse_duration)]
@@ -68,11 +69,16 @@ async fn main() {
 async fn run() -> i32 {
     let cli = Cli::parse();
 
+    let config_path = match config::resolve_path(cli.config.as_deref()) {
+        Ok(path) => path,
+        Err(e) => return fail(&e),
+    };
+
     if let Some(Command::Validate) = cli.command {
-        return validate(&cli.config);
+        return validate(&config_path);
     }
 
-    let config = match load_runnable_config(&cli) {
+    let config = match load_runnable_config(&cli, &config_path) {
         Ok(config) => config,
         Err(code) => return code,
     };
@@ -150,8 +156,8 @@ fn validate(path: &Path) -> i32 {
 
 /// Loads the config and applies CLI filters, returning the runnable process
 /// set or the exit code to fail with.
-fn load_runnable_config(cli: &Cli) -> Result<Config, i32> {
-    let mut config = match Config::load(&cli.config) {
+fn load_runnable_config(cli: &Cli, path: &Path) -> Result<Config, i32> {
+    let mut config = match Config::load(path) {
         Ok(config) => config,
         Err(e) => return Err(fail(&e)),
     };
@@ -163,7 +169,7 @@ fn load_runnable_config(cli: &Cli) -> Result<Config, i32> {
     }
 
     if config.processes().is_empty() {
-        eprintln!("error: no processes defined in {}", cli.config.display());
+        eprintln!("error: no processes defined in {}", path.display());
         return Err(1);
     }
     Ok(config)

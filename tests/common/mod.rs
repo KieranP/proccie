@@ -70,8 +70,14 @@ pub fn build_services(config: &Config, logger: &Logger) -> Arc<[Service]> {
 /// Writes `content` to a `Procfile.toml` inside a fresh temp directory and
 /// returns the directory (keep it alive) and the file path.
 pub fn write_config(content: &str) -> (TempDir, PathBuf) {
+    write_config_named("Procfile.toml", content)
+}
+
+/// Like [`write_config`], but names the file `name` so tests can exercise
+/// format detection (e.g. a bare `Procfile`) and default-path fallback.
+pub fn write_config_named(name: &str, content: &str) -> (TempDir, PathBuf) {
     let dir = tempfile::tempdir().expect("create temp dir");
-    let path = dir.path().join("Procfile.toml");
+    let path = dir.path().join(name);
     std::fs::write(&path, content).expect("write config");
     (dir, path)
 }

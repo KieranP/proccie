@@ -29,6 +29,16 @@ pub enum ConfigError {
     #[error("parsing config {path}: unknown top-level key {key:?} (expected a process table)")]
     UnknownTopLevelKey { path: PathBuf, key: String },
 
+    #[error("parsing Procfile {path} (line {line}): {reason}")]
+    Procfile {
+        path: PathBuf,
+        line: usize,
+        reason: String,
+    },
+
+    #[error("no config file found (tried {})", super::DEFAULT_CONFIG_FILES.join(", "))]
+    NoDefaultConfig,
+
     #[error("parsing config {path}: process {name:?}: {source}")]
     Process {
         path: PathBuf,
@@ -43,9 +53,10 @@ pub enum ConfigError {
     #[error("dependency cycle detected: {0}")]
     Cycle(String),
 
-    #[error("{scope} env_file: {source}")]
+    #[error("{scope} env_file {file:?}: {source}")]
     EnvFile {
         scope: String,
+        file: String,
         #[source]
         source: dotenvy::Error,
     },

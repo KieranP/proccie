@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use proccie::config::{Config, ExitCodes, Readiness};
 
-use common::write_config;
+use common::{write_config, write_config_named};
 
 /// Loads config from inline TOML, asserting success.
 fn load(content: &str) -> Config {
@@ -22,6 +22,20 @@ fn load_err(content: &str) -> String {
     let (_dir, path) = write_config(content);
     Config::load(&path)
         .expect_err("config should fail")
+        .to_string()
+}
+
+/// Loads a bare `Procfile` (plain format), asserting success.
+fn load_procfile(content: &str) -> Config {
+    let (_dir, path) = write_config_named("Procfile", content);
+    Config::load(&path).expect("Procfile should load")
+}
+
+/// Loads a bare `Procfile`, asserting failure, and returns the error message.
+fn load_procfile_err(content: &str) -> String {
+    let (_dir, path) = write_config_named("Procfile", content);
+    Config::load(&path)
+        .expect_err("Procfile should fail")
         .to_string()
 }
 
@@ -995,4 +1009,102 @@ command = "x"
     assert!(proccie::config::dependents(&["web".to_owned()], &adj).is_empty());
     // cache is independent.
     assert!(proccie::config::dependents(&["cache".to_owned()], &adj).is_empty());
+}
+
+#[test]
+fn parses_plain_procfile_format() {
+    // A bare `Procfile` (no `.toml` extension) is read as the Heroku/foreman
+    // format: one `name: command` per line, with the command bare (no keys).
+    let cfg =
+        load_procfile("web: bundle exec rails server -p $PORT\nworker: bundle exec sidekiq\n");
+
+    assert_eq!(cfg.processes().len(), 2);
+    assert_eq!(
+        cfg.processes()["web"].command,
+        "bundle exec rails server -p $PORT"
+    );
+    assert_eq!(cfg.processes()["worker"].command, "bundle exec sidekiq");
+    // Plain entries carry no exit_codes, readiness, or dependencies.
+    assert!(cfg.processes()["web"].exit_codes.is_empty());
+    assert!(cfg.processes()["web"].readiness.is_none());
+    assert!(cfg.processes()["web"].depends_on.is_empty());
+}
+
+#[test]
+fn procfile_skips_blank_lines_and_comments() {
+    let cfg = load_procfile(
+        "# a leading comment\n\nweb: npm start\n   # indented comment\nworker: sh work.sh\n",
+    );
+    assert_eq!(cfg.names(), ["web", "worker"]);
+}
+
+#[test]
+fn procfile_splits_on_first_colon_and_keeps_inline_hash() {
+    // Only the first colon separates name from command; later colons and a
+    // `#` that is not at the start of the line belong to the command.
+    let cfg = load_procfile("web: curl http://localhost:3000/#health\n");
+    assert_eq!(
+        cfg.processes()["web"].command,
+        "curl http://localhost:3000/#health"
+    );
+}
+
+#[test]
+fn procfile_rejects_a_line_without_a_colon() {
+    let err = load_procfile_err("this is not valid\n");
+    assert!(err.contains("line 1"), "{err}");
+    assert!(err.contains("name: command"), "{err}");
+}
+
+#[test]
+fn procfile_rejects_an_empty_command() {
+    let err = load_procfile_err("web:   \n");
+    assert!(err.contains("no command"), "{err}");
+}
+
+#[test]
+fn procfile_rejects_a_duplicate_name() {
+    let err = load_procfile_err("web: a\nweb: b\n");
+    assert!(err.contains("line 2") && err.contains("duplicate"), "{err}");
+}
+
+#[test]
+fn procfile_rejects_an_invalid_name() {
+    let err = load_procfile_err("we b: echo hi\n");
+    assert!(err.contains("invalid process name"), "{err}");
+}
+
+#[test]
+fn procfile_tolerates_crlf_and_a_leading_bom() {
+    // A Windows-authored Procfile may use CRLF line endings and a leading BOM.
+    let cfg = load_procfile("\u{feff}web: echo a\r\nworker: echo b\r\n");
+    assert_eq!(cfg.names(), ["web", "worker"]);
+    assert_eq!(cfg.processes()["web"].command, "echo a");
+}
+
+#[test]
+fn plain_procfile_auto_loads_a_sibling_dotenv() {
+    // foreman convention: a `.env` next to a plain Procfile applies to every
+    // process, and overrides the inherited (base) environment.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Procfile"), "web: npm start\n").unwrap();
+    std::fs::write(dir.path().join(".env"), "FROM_ENV=dotenv\n").unwrap();
+    let cfg_path = dir.path().join("Procfile");
+
+    let base = BTreeMap::from([
+        ("INHERITED".to_owned(), "from_base".to_owned()),
+        ("FROM_ENV".to_owned(), "base_loses".to_owned()),
+    ]);
+    let cfg = Config::load_with_env(&cfg_path, base).unwrap();
+
+    let env = env_of(&cfg, "web");
+    assert_eq!(env["INHERITED"], "from_base");
+    assert_eq!(env["FROM_ENV"], "dotenv");
+}
+
+#[test]
+fn plain_procfile_without_a_dotenv_does_not_error() {
+    // The auto `.env` is optional: its absence must not fail the load.
+    let cfg = load_procfile("web: npm start\n");
+    assert_eq!(cfg.names(), ["web"]);
 }

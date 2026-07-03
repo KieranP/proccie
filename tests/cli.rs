@@ -95,6 +95,59 @@ fn validate_reports_a_missing_file() {
 }
 
 #[test]
+fn defaults_fall_back_from_procfile_toml_to_procfile() {
+    // With no `--config`, `Procfile.toml` is preferred; a bare `Procfile` is the
+    // fallback and is read as the plain format.
+    let dir = tempfile::tempdir().expect("temp dir");
+    std::fs::write(dir.path().join("Procfile"), "web: echo hi\n").expect("write Procfile");
+
+    // Only a Procfile present -> fall back to it.
+    let output = Command::new(BIN)
+        .arg("validate")
+        .current_dir(dir.path())
+        .output()
+        .expect("run proccie");
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Procfile:") && stdout.contains("web"),
+        "{stdout}"
+    );
+
+    // Adding a Procfile.toml takes precedence over the plain Procfile.
+    std::fs::write(
+        dir.path().join("Procfile.toml"),
+        "[api]\ncommand = \"echo hi\"\n",
+    )
+    .expect("write Procfile.toml");
+    let output = Command::new(BIN)
+        .arg("validate")
+        .current_dir(dir.path())
+        .output()
+        .expect("run proccie");
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Procfile.toml") && stdout.contains("api"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn errors_when_no_default_config_exists() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let output = Command::new(BIN)
+        .arg("validate")
+        .current_dir(dir.path())
+        .output()
+        .expect("run proccie");
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("no config file found"), "{stderr}");
+}
+
+#[test]
 fn run_supervises_processes_to_completion() {
     let (_dir, path) = write_config(
         r#"

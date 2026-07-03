@@ -10,7 +10,7 @@ Rust (stable, 1.95+) process manager on Tokio. Build/test/lint: [DEVELOP.md](DEV
 ## Layout
 
 - `src/main.rs` -- CLI parsing, TTY/TUI selection, signal handling
-- `src/config/` -- TOML parsing, validation, dependency graph, env resolution
+- `src/config/` -- TOML + plain Procfile parsing, validation, dependency graph, env resolution
 - `src/theme/` -- terminal light/dark detection, per-background colors, `color` parsing
 - `src/logger/` -- domain-free logging: per-tag writers over an ANSI stream or a store
 - `src/service/` -- per-service object: config, color, `ServiceStatus`, log store

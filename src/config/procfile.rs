@@ -15,7 +15,7 @@ pub struct Parsed {
 
 /// Decodes TOML into processes, splitting out top-level `env_file`/`environment`.
 /// Remaining tables become processes; other scalar keys are rejected.
-pub fn parse(data: &str, path: &Path) -> Result<Parsed, ConfigError> {
+pub fn parse_toml(data: &str, path: &Path) -> Result<Parsed, ConfigError> {
     let mut table: toml::Table = data.parse().map_err(|source| ConfigError::Toml {
         path: path.to_path_buf(),
         source: Box::new(source),
@@ -44,6 +44,60 @@ pub fn parse(data: &str, path: &Path) -> Result<Parsed, ConfigError> {
     Ok(Parsed {
         global_env_file,
         global_env,
+        processes,
+    })
+}
+
+/// Parses the plain foreman Procfile format: one `name: command` per line,
+/// skipping blank and `#`-comment lines. No keys beyond the command.
+pub fn parse_plain(data: &str, path: &Path) -> Result<Parsed, ConfigError> {
+    let mut processes = BTreeMap::new();
+
+    // Strip a leading UTF-8 BOM, as editors on Windows often prepend one.
+    let data = data.strip_prefix('\u{feff}').unwrap_or(data);
+    for (index, raw) in data.lines().enumerate() {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        let line = index + 1;
+        let err = |reason: String| ConfigError::Procfile {
+            path: path.to_path_buf(),
+            line,
+            reason,
+        };
+
+        let (name, command) = trimmed
+            .split_once(':')
+            .ok_or_else(|| err("expected \"name: command\"".to_owned()))?;
+        let (name, command) = (name.trim(), command.trim());
+
+        if !is_valid_name(name) {
+            return Err(err(format!(
+                "invalid process name {name:?} (expected letters, digits, \"-\", or \"_\")"
+            )));
+        }
+        if command.is_empty() {
+            return Err(err(format!("process {name:?} has no command")));
+        }
+        if processes
+            .insert(
+                name.to_owned(),
+                Process {
+                    command: command.to_owned(),
+                    ..Process::default()
+                },
+            )
+            .is_some()
+        {
+            return Err(err(format!("duplicate process name {name:?}")));
+        }
+    }
+
+    Ok(Parsed {
+        global_env_file: None,
+        global_env: BTreeMap::new(),
         processes,
     })
 }
@@ -84,4 +138,12 @@ fn take_environment(
             }),
         })
         .collect()
+}
+
+/// A process name is non-empty and made of letters, digits, `-`, or `_`.
+fn is_valid_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }

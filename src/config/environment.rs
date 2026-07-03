@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use super::error::ConfigError;
-use super::parse::Parsed;
+use super::procfile::Parsed;
 use super::types::Process;
 
 /// Snapshot of the OS environment. Non-UTF-8 vars are skipped rather than panic.
@@ -57,8 +57,11 @@ fn apply_layer(
 ) -> Result<(), ConfigError> {
     if let Some(path) = non_empty(env_file) {
         env.extend(
-            read_env_file(path, config_dir)
-                .map_err(|source| ConfigError::EnvFile { scope, source })?,
+            read_env_file(path, config_dir).map_err(|source| ConfigError::EnvFile {
+                scope,
+                file: path.to_owned(),
+                source,
+            })?,
         );
     }
     env.extend(environment.iter().map(|(k, v)| (k.clone(), v.clone())));

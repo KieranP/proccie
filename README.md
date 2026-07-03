@@ -59,7 +59,16 @@ Then run:
 proccie
 ```
 
-See [CONFIG.md](CONFIG.md) for full configuration reference.
+proccie reads `Procfile.toml` by default, falling back to a plain foreman-style
+`Procfile` of `name: command` lines (no dependencies, readiness, or env):
+
+```
+web: bin/rails server -p 3000
+worker: bundle exec sidekiq
+```
+
+As with foreman, a sibling `.env` file is loaded automatically for a plain
+`Procfile`. See [CONFIG.md](CONFIG.md) for the full reference.
 
 ## Usage
 
@@ -70,7 +79,7 @@ Commands:
   validate            check that the configuration file is valid
 
 Options:
-  -f, --config <PATH>     path to the TOML config file (default "Procfile.toml")
+  -f, --config <PATH>     path to the config file (default: Procfile.toml, then Procfile)
   -t, --timeout <DUR>     shutdown timeout before SIGKILL (default 10s)
   -k, --force-delay <DUR> delay after force SIGKILL before hard exit (default 500ms)
       --only <NAMES>      comma-separated list of processes to run (with dependencies)

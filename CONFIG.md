@@ -3,6 +3,31 @@
 Each section in the TOML file defines a process; the section name (e.g. `[web]`)
 is the process label in log output.
 
+## File selection
+
+With no `-f`/`--config` flag, proccie looks for `Procfile.toml` first, then a
+plain `Procfile`. The format is chosen by extension: a `.toml` file is parsed as
+TOML (documented below); any other name is parsed as the plain format.
+
+## Plain Procfile format
+
+The Heroku/foreman format: one `name: command` per line. Blank lines and lines
+whose first non-space character is `#` are ignored. The name may contain
+letters, digits, `-`, and `_`; everything after the first colon is the command
+(so colons and `#` within the command are preserved).
+
+```
+web: bin/rails server -p 3000
+worker: bundle exec sidekiq
+```
+
+This form has no global, readiness, dependency, or environment keys — each entry
+is just a command. Use `Procfile.toml` when you need those.
+
+If a `.env` file sits next to the Procfile, it is loaded automatically (foreman
+convention) and applied to every process, overriding the inherited environment.
+It is optional: no `.env`, no error.
+
 ## Global keys
 
 Set at the top level, outside any process section.

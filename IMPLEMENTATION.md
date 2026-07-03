@@ -6,8 +6,9 @@ proccie is an async Rust application built on [Tokio](https://tokio.rs/).
 
 Domain layers that depend downward only:
 
-- **`config`** — parses/validates the TOML, detects cycles, and resolves each
-  process's environment into a `Config` of `Process` entries.
+- **`config`** — parses/validates the config (TOML, or the plain Procfile
+  format for non-`.toml` files), detects cycles, and resolves each process's
+  environment into a `Config` of `Process` entries.
 - **`theme`** — the terminal's detected light/dark background, plus the
   per-background color choices (service palette, neutrals, accents) and the
   parser for user-configured `color` values.

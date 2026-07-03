@@ -4,12 +4,12 @@
 mod environment;
 mod error;
 mod graph;
-mod parse;
+mod procfile;
 mod types;
 mod validate;
 
 use std::collections::{BTreeMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub use error::{ConfigError, ConfigWarning, ValidationIssue, ValidationIssueKind};
@@ -22,6 +22,24 @@ pub const DEFAULT_READINESS_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Time between readiness check attempts.
 pub const DEFAULT_READINESS_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Config filenames tried in order when no path is given: TOML, then plain.
+pub const DEFAULT_CONFIG_FILES: [&str; 2] = ["Procfile.toml", "Procfile"];
+
+/// Sibling env file auto-loaded for a plain Procfile, foreman-style, if it exists.
+const DEFAULT_ENV_FILE: &str = ".env";
+
+/// The explicit path if given, else the first [`DEFAULT_CONFIG_FILES`] that exists.
+pub fn resolve_path(explicit: Option<&Path>) -> Result<PathBuf, ConfigError> {
+    if let Some(path) = explicit {
+        return Ok(path.to_path_buf());
+    }
+    DEFAULT_CONFIG_FILES
+        .iter()
+        .map(PathBuf::from)
+        .find(|path| path.exists())
+        .ok_or(ConfigError::NoDefaultConfig)
+}
 
 /// A fully-loaded configuration: a name-keyed map of process definitions with
 /// resolved environments, backed by a [`BTreeMap`] for alphabetical iteration.
@@ -52,10 +70,21 @@ impl Config {
             source,
         })?;
 
-        let parsed = parse::parse(&data, path)?;
-        validate::validate(&parsed.processes)?;
         // Relative `env_file` paths resolve against the config file's directory.
         let config_dir = path.parent().unwrap_or_else(|| Path::new(""));
+
+        // TOML by extension; anything else (notably a bare `Procfile`) is plain format.
+        let parsed = if is_toml(path) {
+            procfile::parse_toml(&data, path)?
+        } else {
+            let mut parsed = procfile::parse_plain(&data, path)?;
+            // foreman convention: apply a sibling `.env` to all processes when present.
+            if config_dir.join(DEFAULT_ENV_FILE).exists() {
+                parsed.global_env_file = Some(DEFAULT_ENV_FILE.to_owned());
+            }
+            parsed
+        };
+        validate::validate(&parsed.processes)?;
         let processes = environment::resolve(parsed, base_env, config_dir)?;
 
         Ok(Config { processes })
@@ -133,6 +162,13 @@ impl Config {
 
         Ok(())
     }
+}
+
+/// Whether a path should be read as TOML: a `.toml` extension, case-insensitive.
+fn is_toml(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("toml"))
 }
 
 /// Builds a `name -> depends_on` adjacency map from a process table.
