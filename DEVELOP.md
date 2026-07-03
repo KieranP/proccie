@@ -1,6 +1,6 @@
 # Developing proccie
 
-This guide covers how to build, test, and lint proccie locally.
+How to build, test, and lint proccie locally.
 
 ## Prerequisites
 

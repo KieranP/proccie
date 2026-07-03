@@ -207,32 +207,4 @@ command     = "bundle exec sidekiq"
 max_retries = 3
 ```
 
-## CLI usage
-
-```
-proccie [options] [command]
-```
-
-| Command    | Description                                                            |
-| ---------- | ---------------------------------------------------------------------- |
-| `validate` | Check the config is valid (and list the processes) without running it. |
-
-| Flag                  | Default         | Description                                                      |
-| --------------------- | --------------- | ---------------------------------------------------------------- |
-| `-f`, `--config`      | `Procfile.toml` | Path to the TOML config file.                                    |
-| `-t`, `--timeout`     | `10s`           | Shutdown timeout before SIGKILL.                                 |
-| `-k`, `--force-delay` | `500ms`         | Delay after a forced SIGKILL before hard exit.                   |
-| `--only`              | _(none)_        | Comma-separated processes to run (their dependencies are added). |
-| `--except`            | _(none)_        | Comma-separated processes to exclude.                            |
-| `--log-level`         | `info`          | Minimum severity: `debug`, `info`, `warn`, or `error`.           |
-| `-h`, `--help`        |                 | Print help and exit.                                             |
-| `-V`, `--version`     |                 | Print version and exit.                                          |
-
-Durations accept any [`humantime`](https://docs.rs/humantime) form (e.g. `10s`,
-`1m30s`). `--only` and `--except` are mutually exclusive.
-
-```sh
-proccie --only web        # run web plus its dependencies
-proccie --except worker   # run everything except worker
-proccie validate          # check the config file
-```
+For CLI flags and commands, see the [README](README.md#usage).

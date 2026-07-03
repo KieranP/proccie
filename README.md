@@ -1,14 +1,17 @@
 # proccie
 
-Process manager that runs and supervises multiple processes. Similar to [overmind](https://github.com/DarthSim/overmind) / [foreman](https://github.com/ddollar/foreman), but with an enhanced Procfile format that supports:
+A process manager that runs and supervises multiple processes, like
+[overmind](https://github.com/DarthSim/overmind) /
+[foreman](https://github.com/ddollar/foreman) but with an enhanced Procfile
+format that adds:
 
-- Process Dependencies (e.g. a frontend may depend on the backend starting first)
-- Readiness Checks (when to consider a process "started", with configurable interval/timeout)
-- Fine-grained control over expected exit codes (e.g. migrations should exit with 0, but not 1)
-- Automatic retries on failure (configurable per process via `max_retries`)
-- Global/per-process environment variables (either defined inline or imported from file path)
-- Save STDOUT/STDERR to separate log files per process (ANSI color codes stripped)
-- Color-coded per-process output that adapts to your terminal's light/dark background (overridable per process; see [Colors](CONFIG.md#colors))
+- **Dependencies** — start a process only after others are ready
+- **Readiness checks** — decide when a process counts as "started" (polled command or fixed delay)
+- **Expected exit codes** — e.g. a migration may exit `0` but not `1`
+- **Automatic retries** on failure, per process (`max_retries`)
+- **Environment variables** — global or per-process, inline or from a file
+- **Per-process log files** (STDOUT/STDERR, with ANSI codes stripped)
+- **Color-coded output** that adapts to your terminal's light/dark background (see [Colors](CONFIG.md#colors))
 
 ## Install
 
@@ -90,17 +93,25 @@ Options:
   -V, --version           print version and exit
 ```
 
-Durations accept any [`humantime`](https://docs.rs/humantime) form (e.g. `10s`, `500ms`, `1m30s`).
+Durations accept any [`humantime`](https://docs.rs/humantime) form (e.g. `10s`, `500ms`, `1m30s`). `--only` and `--except` are mutually exclusive.
+
+```sh
+proccie --only web        # run web plus its dependencies
+proccie --except worker   # run everything except worker
+proccie validate          # check the config without running it
+```
 
 ## Shutdown behavior
 
-proccie uses a two-phase shutdown:
+On the first `Ctrl-C` (or `SIGTERM`), proccie sends `SIGTERM` to every process
+group and waits. If any are still running after the timeout (default 10s, `-t`),
+it sends `SIGKILL`. A second `Ctrl-C` `SIGKILL`s everything immediately, then
+hard-exits after a short delay (default 500ms, `-k`).
 
-1. **SIGTERM** -- on first `Ctrl-C` (or `SIGTERM`), proccie sends `SIGTERM` to every process group and waits for them to exit.
-2. **SIGKILL** -- if processes haven't exited after the timeout (default 10s, configurable with `-t`/`--timeout`), proccie sends `SIGKILL`.
-3. **Force quit** -- sending a second `Ctrl-C` during shutdown immediately `SIGKILL`s all processes. After a brief delay (default 500ms, configurable with `-k`/`--force-delay`), proccie hard-exits.
-
-When a process exits with a code not in its `exit_codes` list (or has no `exit_codes` at all), proccie initiates a full shutdown. It propagates a non-zero exit code as its own; an out-of-list exit of `0` fails the run with code `1`, since `0` can't signal a failing run.
+A process that exits with a code not in its `exit_codes` (or with no `exit_codes`
+set) triggers a full shutdown. proccie adopts a non-zero exit code as its own; an
+out-of-list exit of `0` fails the run with code `1`, since `0` can't signal
+failure.
 
 ## License
 
