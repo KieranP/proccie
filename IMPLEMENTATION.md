@@ -48,7 +48,7 @@ state wins and wakes all waiters. A process becomes ready:
 - **bare** — on launch;
 - **`exit_codes`** — when it exits with an allowed code;
 - **`readiness.command`** — when the polled command passes: its exit code is in
-  `exit_codes` (when set) *and* its stdout contains `output` (when set). Polled at
+  `exit_codes` (when set) _and_ its stdout contains `output` (when set). Polled at
   the interval, the timeout window opening at first launch. Checks pause while no
   child is live, and a pass counts only for the child it probed, so a stale pass
   between retries can't release dependents. A timeout fails the run unless the
@@ -63,7 +63,7 @@ state wins and wakes all waiters. A process becomes ready:
 Up to `1 + max_retries` attempts per process. An unexpected exit — a failure or
 an unconfigured clean (code-0) exit — is retried while attempts remain; once
 exhausted, a failure shuts down with that code and a clean exit ends the run.
-Retries fire on *exit*, so they are rejected alongside `readiness` (which fails
+Retries fire on _exit_, so they are rejected alongside `readiness` (which fails
 via its own timeout and never re-launches).
 
 ## Output draining

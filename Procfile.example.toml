@@ -34,6 +34,14 @@
 #                 output to (plain text, no colors), in addition to the console
 #   max_retries - (optional) integer, max number of times to restart on
 #                 failure before proccie shuts down. Default 0 (no retries).
+#                 Incompatible with readiness.
+#   name        - (optional) display label for the log prefix and TUI tab.
+#                 Defaults to the section name (which stays the identifier used
+#                 in depends_on/--only/--except). Must be unique.
+#   color       - (optional) override the auto-assigned prefix/tab color: one of
+#                 the 16 named ANSI colors (black/red/green/yellow/blue/magenta/
+#                 cyan/white and their "bright-" variants, case-insensitive) or a
+#                 "#rrggbb" hex value.
 
 # Global env file -- loaded for all processes
 env_file = ".env"
@@ -44,6 +52,7 @@ environment = { COMPOSE_PROJECT = "myapp", LOG_LEVEL = "info" }
 [db]
 command   = "postgres -D /usr/local/var/postgres"
 readiness = "pg_isready -q"
+color     = "bright-blue"
 
 [migrations]
 command    = "rake db:migrate"
@@ -61,6 +70,8 @@ readiness.timeout    = 60
 readiness.interval   = 2
 environment          = { RAILS_ENV = "development", PORT = "3000" }
 log_file             = "tmp/backend.log"
+name                 = "rails"
+color                = "#ff8800"
 
 [frontend]
 command     = "npm run dev"

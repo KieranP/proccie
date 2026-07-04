@@ -1,7 +1,9 @@
 # Configuration
 
-Each section in the TOML file defines a process; the section name (e.g. `[web]`)
-is the process label in log output.
+proccie supports two config-file formats: the enhanced `Procfile.toml`, which
+exposes the full feature set (dependencies, readiness checks, retries,
+per-process environment, log files, and colors), and the plain foreman-style
+`Procfile`. This document covers file selection first, then each format in turn.
 
 ## File selection
 
@@ -9,54 +11,42 @@ With no `-f`/`--config` flag, proccie looks for `Procfile.toml` first, then a
 plain `Procfile`. The format is chosen by extension: a `.toml` file is parsed as
 TOML (documented below); any other name is parsed as the plain format.
 
-## Plain Procfile format
+## Enhanced Procfile.toml format
 
-The Heroku/foreman format: one `name: command` per line. Blank lines and lines
-whose first non-space character is `#` are ignored. The name may contain
-letters, digits, `-`, and `_`; everything after the first colon is the command
-(so colons and `#` within the command are preserved).
+Each section defines a process; the section name (e.g. `[web]`) is the process
+label in log output. Unknown keys — at the top level, in a process section, or
+in a readiness table — are rejected, so typos surface as errors rather than
+being silently ignored.
 
-```
-web: bin/rails server -p 3000
-worker: bundle exec sidekiq
-```
-
-This form has no global, readiness, dependency, or environment keys — each entry
-is just a command. Use `Procfile.toml` when you need those.
-
-If a `.env` file sits next to the Procfile, it is loaded automatically (foreman
-convention) and applied to every process, overriding the inherited environment.
-It is optional: no `.env`, no error.
-
-## Global keys
+### Global keys
 
 Set at the top level, outside any process section.
 
-| Key           | Type   | Default  | Description                                                                     |
-| ------------- | ------ | -------- | ------------------------------------------------------------------------------- |
+| Key           | Type   | Default  | Description                                                                       |
+| ------------- | ------ | -------- | --------------------------------------------------------------------------------- |
 | `env_file`    | string | _(none)_ | dotenv-style file applied to **all** processes (see [Environment](#environment)). |
-| `environment` | table  | `{}`     | Inline variables applied to **all** processes; overrides the global `env_file`. |
+| `environment` | table  | `{}`     | Inline variables applied to **all** processes; overrides the global `env_file`.   |
 
-## Process keys
+### Process keys
 
-| Key           | Type            | Default      | Description                                                                                                                          |
-| ------------- | --------------- | ------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `command`     | string          | _(required)_ | Shell command, run via `sh -c`.                                                                                                     |
-| `exit_codes`  | int[]           | _(none)_     | Exit codes that are *expected* and don't trigger shutdown. Omit for long-running services (any exit is then fatal). Excludes `readiness`. |
-| `readiness`   | string or table | _(none)_     | Readiness check — a polled command or a fixed delay; see [Readiness checks](#readiness-checks). Excludes `exit_codes`.               |
-| `depends_on`  | string[]        | `[]`         | Process names that must be ready before this one launches.                                                                          |
-| `env_file`    | string          | _(none)_     | dotenv-style file applied to this process only.                                                                                     |
-| `environment` | table           | `{}`         | Inline variables for this process (highest priority).                                                                              |
-| `log_file`    | string          | _(none)_     | Write a plain, ANSI-stripped copy of this process's output here (created/appended), in addition to the console.                     |
-| `name`        | string          | _(section)_  | Display label for the log prefix and TUI tab; the section name stays the identifier used elsewhere. Must be unique.                 |
-| `color`       | string          | _(auto)_     | Overrides the auto-assigned prefix/tab color: a named ANSI color or `#rrggbb` hex. See [Colors](#colors).                          |
-| `max_retries` | int             | `0`          | Restarts after an unexpected exit before giving up and shutting down. `0` (default) disables retries. Incompatible with `readiness`. |
+| Key           | Type            | Default      | Description                                                                                                                               |
+| ------------- | --------------- | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `command`     | string          | _(required)_ | Shell command, run via `sh -c`.                                                                                                           |
+| `exit_codes`  | int[]           | _(none)_     | Exit codes that are _expected_ and don't trigger shutdown. Omit for long-running services (any exit is then fatal). Excludes `readiness`. |
+| `readiness`   | string or table | _(none)_     | Readiness check — a polled command or a fixed delay; see [Readiness checks](#readiness-checks). Excludes `exit_codes`.                    |
+| `depends_on`  | string[]        | `[]`         | Process names that must be ready before this one launches.                                                                                |
+| `env_file`    | string          | _(none)_     | dotenv-style file applied to this process only.                                                                                           |
+| `environment` | table           | `{}`         | Inline variables for this process (highest priority).                                                                                     |
+| `log_file`    | string          | _(none)_     | Write a plain, ANSI-stripped copy of this process's output here (created/appended), in addition to the console.                           |
+| `name`        | string          | _(section)_  | Display label for the log prefix and TUI tab; the section name stays the identifier used elsewhere. Must be unique.                       |
+| `color`       | string          | _(auto)_     | Overrides the auto-assigned prefix/tab color: a named ANSI color or `#rrggbb` hex. See [Colors](#colors).                                 |
+| `max_retries` | int             | `0`          | Restarts after an unexpected exit before giving up and shutting down. `0` (default) disables retries. Incompatible with `readiness`.      |
 
 A process killed by a signal is reported with the shell convention code 128 +
 the signal number (e.g. `143` for SIGTERM); a signal death is never an expected
 exit, even if its code appears in `exit_codes`.
 
-## Colors
+### Colors
 
 Each process gets a distinct color for its log-line prefix and its tab in the
 interactive TUI, assigned in start order from a built-in palette. When stdout is
@@ -83,13 +73,13 @@ Accepted values:
 
 An unrecognized value fails validation.
 
-## Readiness checks
+### Readiness checks
 
 A `readiness` check determines when a long-running process is ready; dependents
 wait until it completes. There are two modes — a polled **command** or a fixed
 **delay** — and they cannot be mixed in the same table.
 
-### Command
+#### Command
 
 proccie runs `command` on an interval until it passes. A pass requires the
 exit code to be in `exit_codes` (when set) **and** stdout to contain `output`
@@ -110,22 +100,23 @@ readiness.interval   = "500ms"
 readiness.timeout    = 60
 ```
 
-| Table key    | Type            | Default      | Description                                                       |
-| ------------ | --------------- | ------------ | ----------------------------------------------------------------- |
-| `command`    | string          | _(required)_ | Command run as the check.                                         |
-| `exit_codes` | int[]           | _(none)_     | Exit codes that count as ready. Required unless `output` is set.  |
-| `output`     | string          | _(none)_     | Substring stdout must contain to count as ready.                  |
-| `interval`   | int or duration | `1`          | Time between attempts.                                            |
-| `timeout`    | int or duration | `30`         | Max time to wait before the check fails.                          |
+| Table key    | Type            | Default      | Description                                                      |
+| ------------ | --------------- | ------------ | ---------------------------------------------------------------- |
+| `command`    | string          | _(required)_ | Command run as the check.                                        |
+| `exit_codes` | int[]           | _(none)_     | Exit codes that count as ready. Required unless `output` is set. |
+| `output`     | string          | _(none)_     | Substring stdout must contain to count as ready.                 |
+| `interval`   | int or duration | `1`          | Time between attempts.                                           |
+| `timeout`    | int or duration | `30`         | Max time to wait before the check fails.                         |
 
 When both `exit_codes` and `output` are set, both must hold; neither may be empty
 (`exit_codes = []` or `output = ""` is a config error). Durations are bare
-integer seconds (`2`) or a string like `"500ms"` / `"1m 30s"`; a zero or negative
-value falls back to the default. The command runs with the process's resolved
+seconds (integer or float, e.g. `2` or `2.5`) or a string like `"500ms"` /
+`"1m 30s"`; zero falls back to the default and a negative value is an error. The
+command runs with the process's resolved
 environment. If the timeout elapses first, proccie treats it as a startup
 failure: dependents don't start and everything shuts down non-zero.
 
-### Delay
+#### Delay
 
 `readiness.delay` waits a fixed duration after launch, then marks the process
 ready — no command, no timeout. Useful for services with a predictable warm-up
@@ -138,7 +129,7 @@ command         = "bin/worker"
 readiness.delay = "3s"
 ```
 
-## Dependency readiness
+### Dependency readiness
 
 A process listed in `depends_on` must be **ready** before the dependent starts.
 What "ready" means depends on the dependency's config:
@@ -169,15 +160,19 @@ command    = "bin/rails server"
 depends_on = ["migrations", "db"]
 ```
 
-proccie validates that every dependency exists, nothing depends on itself, and
-there are no cycles. Independent processes start concurrently.
+proccie validates that every dependency exists, is listed only once, nothing
+depends on itself, and there are no cycles. Independent processes start
+concurrently.
 
-## Environment
+### Environment
 
 `env_file` (global or per-process) points to a
 [dotenvy](https://github.com/allan2/dotenvy) file: `KEY=VALUE` (with an optional
 `export` prefix), `#` comments, blank lines, quoted and multiline values, and
 `${VAR}` interpolation. Inline `environment` tables set variables directly.
+
+A relative `env_file` path resolves against the config file's directory, not the
+current working directory; an empty value (`env_file = ""`) is treated as unset.
 
 Sources merge in this order, each overriding the ones before it:
 
@@ -197,7 +192,7 @@ env_file    = ".env.web"
 environment = { RAILS_ENV = "development", PORT = "3000" }  # highest priority
 ```
 
-## Retries
+### Retries
 
 `max_retries` restarts a process after an unexpected exit, up to that many times,
 before proccie initiates a full shutdown. `0` (the default) means no retries.
@@ -208,4 +203,24 @@ command     = "bundle exec sidekiq"
 max_retries = 3
 ```
 
-For CLI flags and commands, see the [README](README.md#usage).
+## Plain Procfile format
+
+The Heroku/foreman format: one `name: command` per line. Blank lines and lines
+whose first non-space character is `#` are ignored. The name may contain
+letters, digits, `-`, and `_`; everything after the first colon is the command
+(so colons and `#` within the command are preserved).
+
+```
+web: bin/rails server -p 3000
+worker: bundle exec sidekiq
+```
+
+This form has no global, readiness, dependency, or environment keys — each entry
+is just a command. Use `Procfile.toml` when you need those. Names must be unique,
+and an invalid name or an empty command is an error.
+
+If a `.env` file sits next to the Procfile, it is loaded automatically (foreman
+convention) and applied to every process, overriding the inherited environment.
+It is optional: no `.env`, no error.
+
+For CLI flags, keyboard commands, and shutdown behavior, see [USAGE.md](USAGE.md).
