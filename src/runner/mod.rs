@@ -67,6 +67,8 @@ pub(crate) struct State {
     /// Services stopped manually (or via a subtree stop) and how to signal them:
     /// their kills aren't failures, so they don't taint the exit code or shut down.
     stopped: HashMap<String, StopKind>,
+    /// Leftover groups (a reaped leader's members) pending a SIGKILL, keyed by pgid.
+    strays: HashMap<Pid, String>,
     exit_code: i32,
 }
 
@@ -104,6 +106,7 @@ impl Runner {
                     shutting_down: false,
                     killed: false,
                     stopped: HashMap::new(),
+                    strays: HashMap::new(),
                     exit_code: 0,
                 }),
             }),
@@ -133,6 +136,9 @@ impl Runner {
                 self.shared.recover_panic(name);
             }
         }
+
+        // Every task is done; kill any leftovers not yet reaped by their timers.
+        self.shared.reap_strays();
 
         let (code, was_shutdown) = {
             let state = self.shared.lock_state();
@@ -230,12 +236,15 @@ impl Shared {
         }
     }
 
-    /// Drops the child's process group and reports whether it exited due to a
-    /// shutdown or a manual stop (so it isn't classified as a failure).
-    pub(crate) fn deregister_group(&self, name: &str) -> bool {
+    /// Drops the child's process group, returning its pgid (to sweep members the
+    /// leader left behind) and whether it exited via shutdown or a manual stop.
+    pub(crate) fn deregister_group(&self, name: &str) -> (Option<Pid>, bool) {
         let mut state = self.lock_state();
-        state.groups.remove(name);
-        state.shutting_down || state.stopped.contains_key(name)
+        let pgid = state.groups.remove(name);
+        (
+            pgid,
+            state.shutting_down || state.stopped.contains_key(name),
+        )
     }
 
     /// Terminal failure of one process: fail dependents, record `code`, and
@@ -274,6 +283,41 @@ impl Shared {
         self.system
             .warn("forced shutdown, sending SIGKILL to all processes...");
         self.signal_all(Signal::SIGKILL, "SIGKILL (forced)");
+        // A hard exit may follow before run() returns, so reap leftovers now.
+        self.reap_strays();
+    }
+
+    /// SIGKILLs a leftover group after the grace (or at once on shutdown), unless
+    /// `reap_strays` already took it.
+    fn escalate_stray(self: &Arc<Self>, name: String, group: Pid) {
+        let shared = Arc::clone(self);
+        let grace = self.shutdown_timeout;
+        tokio::spawn(async move {
+            tokio::select! {
+                () = shared.token.cancelled() => {}
+                () = tokio::time::sleep(grace) => {}
+            }
+            if shared.lock_state().strays.remove(&group).is_some() {
+                shared.kill_stray(&name, group);
+            }
+        });
+    }
+
+    /// SIGKILLs one leftover group; a gone group (it obeyed the SIGTERM) is a no-op.
+    fn kill_stray(&self, name: &str, group: Pid) {
+        if killpg(group, Signal::SIGKILL).is_ok() {
+            self.system
+                .warn(format!("{name}: killed leftover background process(es)"));
+        }
+    }
+
+    /// SIGKILLs any leftover group not yet reaped by its own timer, so none
+    /// outlives proccie. Called at run end and on a forced shutdown.
+    fn reap_strays(&self) {
+        let strays = std::mem::take(&mut self.lock_state().strays);
+        for (group, name) in strays {
+            self.kill_stray(&name, group);
+        }
     }
 
     /// Stops `name` and its transitive dependents. First call: mark `stopped`, note
@@ -430,7 +474,8 @@ impl Shared {
         if let Some(pgid) = pgid {
             self.signal_group(name, pgid, Signal::SIGKILL, "SIGKILL (panic)");
         }
-        self.deregister_group(name);
+        // The group was already SIGKILL'd above, so no self-exit sweep is needed.
+        let _ = self.deregister_group(name);
         self.fail_run(name, 1);
     }
 }

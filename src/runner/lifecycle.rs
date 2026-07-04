@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use nix::sys::signal::Signal;
+use nix::sys::signal::{Signal, killpg};
 use nix::unistd::Pid;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::net::unix::pipe;
@@ -207,9 +207,14 @@ impl Shared {
         let signal = status.as_ref().ok().and_then(ExitStatusExt::signal);
         let exit_code = exit_code_of(&status, signal);
 
-        // The wait reaped the child; drop its (recyclable) pgid before anything else.
-        let is_shutdown = self.deregister_group(name);
+        // The wait reaped the child; drop its (recyclable) pgid first.
+        let (group, is_shutdown) = self.deregister_group(name);
         set_liveness(running, None);
+
+        // Sweep any members the reaped leader left behind.
+        if let Some(group) = group {
+            self.sweep_group(name, group);
+        }
 
         // Settle the completion status, then release dependents *before* the
         // drain so a lingering grandchild's open pipe can't delay their start.
@@ -238,6 +243,8 @@ impl Shared {
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr))
             .process_group(0)
+            // Reap the child on drop if the task unwinds before it's registered/killed.
+            .kill_on_drop(true)
             .spawn()?;
         Ok((child, rx))
     }
@@ -248,6 +255,20 @@ impl Shared {
         if matches!(svc.process().ready_when(), ReadyWhen::Launched) {
             self.signal_dep_result(svc.key(), DepState::Ready);
         }
+    }
+
+    /// SIGTERMs a reaped leader's leftover group members, then schedules their
+    /// SIGKILL. An empty group (the common case) is a no-op.
+    fn sweep_group(self: &Arc<Self>, name: &str, group: Pid) {
+        // An error means the group is already empty: nothing was left behind.
+        if killpg(group, Signal::SIGTERM).is_err() {
+            return;
+        }
+        self.system.debug(format!(
+            "{name}: terminating leftover background process(es)"
+        ));
+        self.lock_state().strays.insert(group, name.to_owned());
+        self.escalate_stray(name.to_owned(), group);
     }
 
     /// Settles a genuine expected completion's status at exit (atomically, before

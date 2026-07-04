@@ -73,6 +73,18 @@ After a child exits, output is drained until the pump goes idle for
 absolute `OUTPUT_DRAIN_MAX` cap, so a grandchild that keeps writing can't hang
 the run.
 
+## Leftover cleanup
+
+When a process's leader exits, any members left in its group — e.g. a command
+that backgrounds a helper (`worker & exec server`) — are swept so nothing is
+orphaned: `SIGTERM` at once, then `SIGKILL` after `--timeout` on the group's own
+timer, independent of any shutdown. A leftover that respects `SIGTERM` dies
+during the grace and is never force-killed. This runs on every leader exit (a
+self-exit, a shutdown, or a stop). A final sweep at run end (and on a forced
+shutdown) `SIGKILL`s any leftover whose timer hasn't fired, so none outlives
+proccie. Members that escape the group (via `setsid`/daemonizing) are beyond
+`killpg` and are not cleaned up.
+
 ## Shutdown
 
 A `CancellationToken` cancels dependency waits and readiness polling; signals go

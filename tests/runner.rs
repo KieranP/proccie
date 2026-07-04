@@ -45,6 +45,28 @@ fn run_in_background(runner: &Runner) -> tokio::task::JoinHandle<i32> {
     tokio::spawn(async move { runner.run().await })
 }
 
+/// Whether `pid` still exists, via `kill -0` (portable across macOS and Linux).
+fn is_alive(pid: i32) -> bool {
+    std::process::Command::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+/// Polls until `pid` is gone (init reaps the killed zombie) or `timeout` elapses.
+async fn wait_until_dead(pid: i32, timeout: Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        if !is_alive(pid) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    !is_alive(pid)
+}
+
 // --- exit-code handling ---
 
 #[tokio::test]
@@ -1004,4 +1026,117 @@ depends_on = ["parent"]
         "{}",
         out.contents()
     );
+}
+
+// --- leftover process-group members ---
+
+#[tokio::test]
+async fn leftover_that_ignores_sigterm_is_sigkilled_on_exit() {
+    // A leader backgrounds a child (same process group) that ignores SIGTERM, then
+    // exits on its own. When the run ends, the child must be force-killed, not orphaned.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let pidfile = dir.path().join("child.pid");
+    let (runner, out, _cfg) = make_runner(&format!(
+        "[leader]\ncommand = \"sh -c 'trap \\\"\\\" TERM; echo $$ > {pid}; exec sleep 30' & sleep 0.4; exit 0\"\n",
+        pid = pidfile.display(),
+    ));
+
+    let code = tokio::time::timeout(TIMEOUT, run_in_background(&runner))
+        .await
+        .expect("run finished")
+        .expect("task joined");
+    assert_eq!(code, 0);
+
+    let pid: i32 = std::fs::read_to_string(&pidfile)
+        .expect("pidfile written")
+        .trim()
+        .parse()
+        .expect("valid pid");
+    assert!(
+        wait_until_dead(pid, TIMEOUT).await,
+        "leftover process {pid} survived the run: {}",
+        out.contents()
+    );
+    assert!(
+        out.contents()
+            .contains("killed leftover background process(es)"),
+        "{}",
+        out.contents()
+    );
+}
+
+#[tokio::test]
+async fn well_behaved_leftover_is_swept_without_a_forced_kill() {
+    // A backgrounded child that respects SIGTERM dies during the sweep, so no forced
+    // kill is needed — but it must still be gone, never left behind.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let pidfile = dir.path().join("child.pid");
+    let (runner, out, _cfg) = make_runner(&format!(
+        "[leader]\ncommand = \"sh -c 'echo $$ > {pid}; exec sleep 30' & sleep 0.4; exit 0\"\n",
+        pid = pidfile.display(),
+    ));
+
+    let code = tokio::time::timeout(TIMEOUT, run_in_background(&runner))
+        .await
+        .expect("run finished")
+        .expect("task joined");
+    assert_eq!(code, 0);
+
+    let pid: i32 = std::fs::read_to_string(&pidfile)
+        .expect("pidfile written")
+        .trim()
+        .parse()
+        .expect("valid pid");
+    assert!(
+        wait_until_dead(pid, TIMEOUT).await,
+        "leftover process {pid} survived the run: {}",
+        out.contents()
+    );
+    assert!(
+        !out.contents().contains("killed leftover"),
+        "SIGTERM-respecting leftover should not need a forced kill: {}",
+        out.contents()
+    );
+}
+
+#[tokio::test]
+async fn leftover_is_force_killed_on_its_own_grace_not_at_shutdown() {
+    // A task completes with an expected code (so the run does NOT shut down) but
+    // leaves a SIGTERM-ignoring child. It must be SIGKILLed after the grace (2s,
+    // per `make_runner`), not left lingering until proccie exits.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let pidfile = dir.path().join("child.pid");
+    let (runner, out, _cfg) = make_runner(&format!(
+        "[task]\ncommand = \"sh -c 'trap \\\"\\\" TERM; echo $$ > {pid}; exec sleep 30' & sleep 0.3; exit 0\"\nexit_codes = [0]\n\n[keeper]\ncommand = \"sleep 30\"\ndepends_on = [\"task\"]\n",
+        pid = pidfile.display(),
+    ));
+
+    let handle = run_in_background(&runner);
+    assert!(wait_for_output(&out, "task completed with expected exit code", TIMEOUT).await);
+
+    let pid: i32 = std::fs::read_to_string(&pidfile)
+        .expect("pidfile written")
+        .trim()
+        .parse()
+        .expect("valid pid");
+    assert!(
+        wait_until_dead(pid, TIMEOUT).await,
+        "leftover {pid} was not force-killed on its own grace: {}",
+        out.contents()
+    );
+    // The run is still up: the leftover died on its timer, not via a shutdown.
+    assert!(
+        !out.contents().contains("initiating shutdown"),
+        "run should still be up: {}",
+        out.contents()
+    );
+    assert!(
+        out.contents()
+            .contains("killed leftover background process(es)"),
+        "{}",
+        out.contents()
+    );
+
+    runner.shutdown();
+    handle.await.unwrap();
 }
