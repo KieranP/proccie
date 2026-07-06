@@ -47,16 +47,22 @@ state wins and wakes all waiters. A process becomes ready:
 
 - **bare** — on launch;
 - **`exit_codes`** — when it exits with an allowed code;
-- **`readiness.command`** — when the polled command passes: its exit code is in
-  `exit_codes` (when set) _and_ its stdout contains `output` (when set). Polled at
-  the interval, the timeout window opening at first launch. Checks pause while no
-  child is live, and a pass counts only for the child it probed, so a stale pass
-  between retries can't release dependents. A timeout fails the run unless the
-  service was manually stopped;
+- **`readiness.shell`** / **`readiness.http`** — when the polled probe passes: a
+  shell command's exit code is in `exit_codes` (when set) _and_ its stdout
+  contains `output` (when set); or an HTTP GET returns a status in `status` _and_
+  a body containing `output` (when set). Polled at the interval, the timeout
+  window opening at first launch. Checks pause while no child is live, and a pass
+  counts only for the child it probed, so a stale pass between retries can't
+  release dependents. A timeout fails the run unless the service was manually
+  stopped;
+- **`readiness.output`** — when the process's own output (ANSI-stripped) contains
+  the substring; the output pump signals the poller, so it works with or without
+  the TUI;
 - **`readiness.delay`** — after a fixed sleep from first launch, provided the
   child is still live (a shutdown, stop, or exit cancels it instead).
 
-`exit_codes` and `readiness` are mutually exclusive.
+Any `output` substring is matched against ANSI-stripped text. `exit_codes` and
+`readiness` are mutually exclusive.
 
 ## Retries
 

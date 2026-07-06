@@ -487,3 +487,12 @@ fn shell_command(cmd: &str, env: &BTreeMap<String, String>) -> Command {
     command.arg("-c").arg(cmd).env_clear().envs(env);
     command
 }
+
+/// Whether `haystack` contains `needle` as a byte substring. An empty needle
+/// never matches (and guards `windows(0)`, which would panic). Shared by the
+/// output-watch scanner and the shell/http output checks.
+fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty()
+        && needle.len() <= haystack.len()
+        && haystack.windows(needle.len()).any(|w| w == needle)
+}

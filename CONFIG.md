@@ -33,7 +33,7 @@ Set at the top level, outside any process section.
 | ------------- | --------------- | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | `command`     | string          | _(required)_ | Shell command, run via `sh -c`.                                                                                                           |
 | `exit_codes`  | int[]           | _(none)_     | Exit codes that are _expected_ and don't trigger shutdown. Omit for long-running services (any exit is then fatal). Excludes `readiness`. |
-| `readiness`   | string or table | _(none)_     | Readiness check — a polled command or a fixed delay; see [Readiness checks](#readiness-checks). Excludes `exit_codes`.                    |
+| `readiness`   | string or table | _(none)_     | Readiness check — a polled shell command or http endpoint, an output watch, or a fixed delay; see [Readiness checks](#readiness-checks). Excludes `exit_codes`. |
 | `depends_on`  | string[]        | `[]`         | Process names that must be ready before this one launches.                                                                                |
 | `env_file`    | string          | _(none)_     | dotenv-style file applied to this process only.                                                                                           |
 | `environment` | table           | `{}`         | Inline variables for this process (highest priority).                                                                                     |
@@ -76,52 +76,115 @@ An unrecognized value fails validation.
 ### Readiness checks
 
 A `readiness` check determines when a long-running process is ready; dependents
-wait until it completes. There are two modes — a polled **command** or a fixed
-**delay** — and they cannot be mixed in the same table.
+wait until it completes. There are four mutually-exclusive modes, selected by
+which key the `readiness` table carries: a polled **shell** command
+(`readiness.shell`), a polled **http** endpoint (`readiness.http`), an
+**output** watch on the process's own stdout (`readiness.output`), or a fixed
+**delay** (`readiness.delay`).
 
-#### Command
+Two keys are shared across modes and live at the readiness top level, not inside
+`shell`/`http`:
 
-proccie runs `command` on an interval until it passes. A pass requires the
-exit code to be in `exit_codes` (when set) **and** stdout to contain `output`
-(when set). At least one of `exit_codes` / `output` must be given, so "ready"
-is always explicit. A bare string is shorthand for a command with `exit_codes = [0]`:
+| Top-level key | Type            | Default | Description                                                                 |
+| ------------- | --------------- | ------- | --------------------------------------------------------------------------- |
+| `interval`    | int or duration | `1`     | Time between poll attempts (`shell`/`http` only — nothing else is polled).  |
+| `timeout`     | int or duration | `30`    | Max time to wait before the check fails (`shell`/`http`/`output`).          |
+
+`interval` has no meaning for the `output` watch, and neither key applies to
+`delay` (which is its own timer); setting them there is a config error.
+
+In every mode, any `output` substring is matched against text with ANSI escape
+codes stripped, so a colored banner still matches a plain-text needle. Durations
+are bare seconds (integer or float, e.g. `2` or `2.5`) or a string like
+`"500ms"` / `"1m 30s"`; zero falls back to the default and a negative value is an
+error. When a `timeout` elapses before the check passes, proccie treats it as a
+startup failure: dependents don't start and everything shuts down non-zero.
+
+#### Shell
+
+proccie runs `shell.cmd` on the `interval` until it passes. A pass requires the
+exit code to be in `exit_codes` (when set) **and** the command's stdout to
+contain `output` (when set). At least one of `exit_codes` / `output` must be
+given, so "ready" is always explicit:
 
 ```toml
 [db]
-command   = "postgres -D /usr/local/var/postgres"
-readiness = "pg_isready -q"   # ready on exit 0
+command                    = "postgres -D /usr/local/var/postgres"
+readiness.shell.cmd        = "pg_isready -q"
+readiness.shell.exit_codes = [0]
 
 [web]
-command              = "bin/rails server -p 3000"
-readiness.command    = "curl -s http://localhost:3000/health"
-readiness.output     = "\"status\":\"ok\""
-readiness.exit_codes = [0]
-readiness.interval   = "500ms"
-readiness.timeout    = 60
+command                    = "bin/rails server -p 3000"
+readiness.shell.cmd        = "curl -s http://localhost:3000/health"
+readiness.shell.output     = "\"status\":\"ok\""
+readiness.shell.exit_codes = [0]
+readiness.interval         = "500ms"
+readiness.timeout          = 60
 ```
 
-| Table key    | Type            | Default      | Description                                                      |
-| ------------ | --------------- | ------------ | ---------------------------------------------------------------- |
-| `command`    | string          | _(required)_ | Command run as the check.                                        |
-| `exit_codes` | int[]           | _(none)_     | Exit codes that count as ready. Required unless `output` is set. |
-| `output`     | string          | _(none)_     | Substring stdout must contain to count as ready.                 |
-| `interval`   | int or duration | `1`          | Time between attempts.                                           |
-| `timeout`    | int or duration | `30`         | Max time to wait before the check fails.                         |
+| `shell` key  | Type   | Default      | Description                                                      |
+| ------------ | ------ | ------------ | ---------------------------------------------------------------- |
+| `cmd`        | string | _(required)_ | Command run as the check, via `sh -c`.                           |
+| `exit_codes` | int[]  | _(none)_     | Exit codes that count as ready. Required unless `output` is set. |
+| `output`     | string | _(none)_     | Substring stdout must contain to count as ready.                 |
 
-When both `exit_codes` and `output` are set, both must hold; neither may be empty
-(`exit_codes = []` or `output = ""` is a config error). Durations are bare
-seconds (integer or float, e.g. `2` or `2.5`) or a string like `"500ms"` /
-`"1m 30s"`; zero falls back to the default and a negative value is an error. The
-command runs with the process's resolved
-environment. If the timeout elapses first, proccie treats it as a startup
-failure: dependents don't start and everything shuts down non-zero.
+(plus the shared top-level `interval` / `timeout` above). When both `exit_codes`
+and `output` are set, both must hold; neither may be empty (`exit_codes = []` or
+`output = ""` is a config error). The command runs with the process's resolved
+environment.
+
+#### HTTP
+
+`readiness.http` polls a URL on the `interval` until it responds with an allowed
+status and, optionally, a matching body. Both `http` and `https` are supported.
+
+```toml
+[web]
+command               = "bin/rails server -p 3000"
+readiness.http.url    = "http://localhost:3000/health"
+readiness.http.status = [200, 204]
+readiness.http.output = "\"status\":\"ok\""
+readiness.interval    = "500ms"
+readiness.timeout     = 60
+```
+
+| `http` key | Type         | Default      | Description                               |
+| ---------- | ------------ | ------------ | ----------------------------------------- |
+| `url`      | string       | _(required)_ | The `http`/`https` URL to GET.            |
+| `status`   | int or int[] | `200`        | Status code(s) that count as ready.       |
+| `output`   | string       | _(none)_     | Substring the response body must contain. |
+
+(plus the shared top-level `interval` / `timeout` above). Redirects are **not**
+followed, so `status` reflects the endpoint's own response — point the probe at
+the URL that actually serves the health check. A request error
+(connection refused, DNS failure, TLS error, per-request
+timeout) simply counts as "not ready yet" and the poll retries. TLS certificates
+are verified — point the probe at a plain-HTTP port, or use a `shell` probe, for
+services with self-signed certificates.
+
+#### Output
+
+`readiness.output` watches the process's **own** stdout (and stderr) instead of
+running a separate probe. The process is ready the moment its output contains the
+substring — handy for servers that print a `Listening on …` banner once they're
+up:
+
+```toml
+[web]
+command           = "bin/rails server -p 3000"
+readiness.output  = "Listening on"
+readiness.timeout = 60
+```
+
+`readiness.output` is the substring the process's output must emit (with the
+shared top-level `timeout` bounding the wait). The match is case-sensitive and
+needn't be on its own line. Nothing is polled, so `interval` doesn't apply.
 
 #### Delay
 
 `readiness.delay` waits a fixed duration after launch, then marks the process
-ready — no command, no timeout. Useful for services with a predictable warm-up
-but no easy health probe. It is incompatible with `command`/`exit_codes`/`output`/
-`interval`/`timeout`.
+ready — no probe, no timeout. Useful for services with a predictable warm-up but
+no easy health probe.
 
 ```toml
 [worker]
@@ -136,8 +199,9 @@ What "ready" means depends on the dependency's config:
 
 1. **`exit_codes`** — ready when it exits with an allowed code (migrations,
    build steps, other one-shot tasks).
-2. **`readiness`** — ready when the readiness command passes or the readiness
-   delay elapses (long-running services with health checks or warm-up periods).
+2. **`readiness`** — ready when the readiness probe passes, the watched output
+   appears, or the delay elapses (long-running services with health checks or
+   warm-up periods).
 3. **Neither** — ready immediately on launch (bare long-running services).
    Because dependents then start before the process is actually serving, proccie
    warns when a depended-on process uses this mode.
@@ -148,8 +212,9 @@ command    = "rake db:migrate"
 exit_codes = [0]
 
 [db]
-command   = "postgres -D /usr/local/var/postgres"
-readiness = "pg_isready -q"
+command                    = "postgres -D /usr/local/var/postgres"
+readiness.shell.cmd        = "pg_isready -q"
+readiness.shell.exit_codes = [0]
 
 [worker]
 command = "bundle exec sidekiq"

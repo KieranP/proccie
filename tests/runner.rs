@@ -7,6 +7,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tempfile::TempDir;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 
 use proccie::config::Config;
 use proccie::runner::Runner;
@@ -65,6 +67,29 @@ async fn wait_until_dead(pid: i32, timeout: Duration) -> bool {
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     !is_alive(pid)
+}
+
+/// Binds a throwaway HTTP server on `127.0.0.1` that answers every request with
+/// `status`/`body`, returning its port. The task lives until the runtime ends.
+async fn serve_http(status: u16, body: &'static str) -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((mut sock, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                // Drain the request line/headers before replying, then close.
+                let mut buf = [0u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                let response = format!(
+                    "HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len(),
+                );
+                let _ = sock.write_all(response.as_bytes()).await;
+                let _ = sock.shutdown().await;
+            });
+        }
+    });
+    port
 }
 
 // --- exit-code handling ---
@@ -423,9 +448,9 @@ async fn dependent_waits_for_readiness_check() {
     let (runner, out, _cfg_dir) = make_runner(&format!(
         r#"
 [api]
-command             = "sleep 0.3 && touch {ready} && sleep 30"
-readiness.command    = "test -f {ready}"
-readiness.exit_codes = [0]
+command                    = "sleep 0.3 && touch {ready} && sleep 30"
+readiness.shell.cmd        = "test -f {ready}"
+readiness.shell.exit_codes = [0]
 readiness.interval   = 1
 readiness.timeout    = 5
 
@@ -445,13 +470,87 @@ depends_on = ["api"]
 }
 
 #[tokio::test]
+async fn dependent_waits_for_readiness_output_watch() {
+    // No command: the process's own stdout is watched for the substring.
+    let (runner, out, _dir) = make_runner(
+        r#"
+[api]
+command           = "sleep 0.3 && echo 'Listening on :8080' && sleep 30"
+readiness.output  = "Listening on"
+readiness.timeout = 5
+
+[frontend]
+command    = "echo frontend-started"
+exit_codes = [0]
+depends_on = ["api"]
+"#,
+    );
+
+    let handle = run_in_background(&runner);
+    assert!(wait_for_output(&out, "frontend-started", Duration::from_secs(10)).await);
+    assert!(out.contents().contains("readiness check passed"));
+
+    runner.shutdown();
+    handle.await.unwrap();
+}
+
+#[tokio::test]
+async fn readiness_output_watch_matches_through_ansi_color_codes() {
+    // The banner is wrapped in (and split by) ANSI color; the needle is plain text.
+    let (runner, out, _dir) = make_runner(
+        r#"
+[api]
+command           = "printf '\\033[32mListen\\033[0ming on :8080\\033[0m\\n' && sleep 30"
+readiness.output  = "Listening on"
+readiness.timeout = 5
+
+[frontend]
+command    = "echo frontend-started"
+exit_codes = [0]
+depends_on = ["api"]
+"#,
+    );
+
+    let handle = run_in_background(&runner);
+    assert!(wait_for_output(&out, "frontend-started", Duration::from_secs(10)).await);
+    assert!(out.contents().contains("readiness check passed"));
+
+    runner.shutdown();
+    handle.await.unwrap();
+}
+
+#[tokio::test]
+async fn readiness_output_watch_times_out_when_the_needle_never_appears() {
+    let (runner, out, _dir) = make_runner(
+        r#"
+[api]
+command           = "echo 'nothing useful' && sleep 30"
+readiness.output  = "ready"
+readiness.timeout = 1
+
+[frontend]
+command    = "echo frontend-started"
+exit_codes = [0]
+depends_on = ["api"]
+"#,
+    );
+
+    // The output never contains the needle, so readiness times out and fails the run.
+    let code = runner.run().await;
+    let output = out.contents();
+    assert!(output.contains("timed out"), "{output}");
+    assert!(!output.contains("frontend-started"), "{output}");
+    assert_ne!(code, 0);
+}
+
+#[tokio::test]
 async fn readiness_timeout_blocks_dependent_and_fails_the_run() {
     let (runner, out, _dir) = make_runner(
         r#"
 [api]
-command             = "sleep 30"
-readiness.command    = "false"
-readiness.exit_codes = [0]
+command                    = "sleep 30"
+readiness.shell.cmd        = "false"
+readiness.shell.exit_codes = [0]
 readiness.interval   = 1
 readiness.timeout    = 1
 
@@ -476,9 +575,9 @@ async fn readiness_check_runs_at_least_once_when_timeout_is_short() {
     let (runner, out, _dir) = make_runner(
         r#"
 [api]
-command             = "sleep 30"
-readiness.command    = "true"
-readiness.exit_codes = [0]
+command                    = "sleep 30"
+readiness.shell.cmd        = "true"
+readiness.shell.exit_codes = [0]
 readiness.interval   = 10
 readiness.timeout    = 1
 
@@ -501,10 +600,10 @@ async fn readiness_check_sees_the_process_environment() {
     let (runner, out, _dir) = make_runner(
         r#"
 [api]
-command            = "sleep 30"
-environment          = { READY_FLAG = "yes" }
-readiness.command    = "test \"$READY_FLAG\" = yes"
-readiness.exit_codes = [0]
+command                    = "sleep 30"
+environment                = { READY_FLAG = "yes" }
+readiness.shell.cmd        = "test \"$READY_FLAG\" = yes"
+readiness.shell.exit_codes = [0]
 readiness.interval   = 1
 readiness.timeout    = 5
 
@@ -575,9 +674,9 @@ async fn readiness_matches_a_non_zero_exit_code() {
     let (runner, out, _dir) = make_runner(
         r#"
 [api]
-command              = "sleep 30"
-readiness.command    = "exit 3"
-readiness.exit_codes = [3]
+command                    = "sleep 30"
+readiness.shell.cmd        = "exit 3"
+readiness.shell.exit_codes = [3]
 readiness.interval   = 1
 readiness.timeout    = 5
 
@@ -602,10 +701,10 @@ async fn readiness_requires_both_exit_code_and_output_when_both_set() {
     let (runner, out, _dir) = make_runner(
         r#"
 [api]
-command              = "sleep 30"
-readiness.command    = "echo nope"
-readiness.exit_codes = [0]
-readiness.output     = "ready"
+command                    = "sleep 30"
+readiness.shell.cmd        = "echo nope"
+readiness.shell.exit_codes = [0]
+readiness.shell.output     = "ready"
 readiness.interval   = 1
 readiness.timeout    = 1
 
@@ -633,9 +732,9 @@ async fn readiness_matches_on_command_output() {
     let (runner, out, _cfg_dir) = make_runner(&format!(
         r#"
 [api]
-command           = "sleep 0.3 && echo serving > {ready} && sleep 30"
-readiness.command = "cat {ready} 2>/dev/null; true"
-readiness.output  = "serving"
+command                = "sleep 0.3 && echo serving > {ready} && sleep 30"
+readiness.shell.cmd    = "cat {ready} 2>/dev/null; true"
+readiness.shell.output = "serving"
 readiness.interval = 1
 readiness.timeout  = 5
 
@@ -651,6 +750,62 @@ depends_on = ["api"]
 
     runner.shutdown();
     handle.await.unwrap();
+}
+
+#[tokio::test]
+async fn dependent_waits_for_readiness_http() {
+    // The endpoint returns 200 with a matching body, so readiness passes.
+    let port = serve_http(200, "{\"status\":\"ok\"}").await;
+    let (runner, out, _dir) = make_runner(&format!(
+        r#"
+[api]
+command                 = "sleep 30"
+readiness.http.url      = "http://127.0.0.1:{port}/health"
+readiness.http.status   = 200
+readiness.http.output   = "\"status\":\"ok\""
+readiness.interval = 1
+readiness.timeout  = 5
+
+[frontend]
+command    = "echo frontend-started"
+exit_codes = [0]
+depends_on = ["api"]
+"#,
+    ));
+
+    let handle = run_in_background(&runner);
+    assert!(wait_for_output(&out, "frontend-started", Duration::from_secs(10)).await);
+    assert!(out.contents().contains("readiness check passed"));
+
+    runner.shutdown();
+    handle.await.unwrap();
+}
+
+#[tokio::test]
+async fn readiness_http_times_out_on_the_wrong_status() {
+    // The endpoint answers 503; readiness wants 200, so it never passes.
+    let port = serve_http(503, "").await;
+    let (runner, out, _dir) = make_runner(&format!(
+        r#"
+[api]
+command                 = "sleep 30"
+readiness.http.url      = "http://127.0.0.1:{port}/health"
+readiness.http.status   = 200
+readiness.interval = 1
+readiness.timeout  = 1
+
+[frontend]
+command    = "echo frontend-started"
+exit_codes = [0]
+depends_on = ["api"]
+"#,
+    ));
+
+    let code = runner.run().await;
+    let output = out.contents();
+    assert!(output.contains("timed out"), "{output}");
+    assert!(!output.contains("frontend-started"), "{output}");
+    assert_ne!(code, 0);
 }
 
 // --- output ordering ---
@@ -956,9 +1111,9 @@ async fn stopping_a_readiness_service_is_not_a_timeout_failure() {
     let (runner, out, _dir) = make_runner(
         r#"
 [api]
-command             = "sleep 30"
-readiness.command    = "false"
-readiness.exit_codes = [0]
+command                    = "sleep 30"
+readiness.shell.cmd        = "false"
+readiness.shell.exit_codes = [0]
 readiness.interval   = 1
 readiness.timeout    = 30
 "#,

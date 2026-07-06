@@ -13,19 +13,23 @@
 #                If the process exits with one of these codes, it won't trigger
 #                a shutdown. Omit for long-running services that should never exit.
 #   readiness  - (optional) readiness check; dependents wait until it completes.
-#                Mutually exclusive with exit_codes. Two modes:
-#                * command -- polled until it passes. A pass needs exit_codes
-#                  (the exit code must be in the list) and/or output (stdout must
-#                  contain the substring); at least one is required. A bare string
-#                  is shorthand for exit_codes = [0]:
-#                    readiness = "pg_isready -q"
-#                    readiness.command    = "curl -s http://localhost:3000/health"
-#                    readiness.output     = "\"status\":\"ok\""
-#                    readiness.exit_codes = [0]
-#                    readiness.interval   = 2     # seconds or "500ms"; default 1
-#                    readiness.timeout    = 60    # default 30
-#                * delay -- sleep a fixed duration after launch, then mark ready.
-#                  Incompatible with the command keys above:
+#                Mutually exclusive with exit_codes. Four mutually-exclusive
+#                modes, one per readiness table. interval/timeout are shared and
+#                live at the readiness top level:
+#                    readiness.interval = 2     # seconds or "500ms"; default 1
+#                    readiness.timeout  = 60    # default 30
+#                * shell -- poll a command; ready on an allowed exit code
+#                  (exit_codes) and/or matching stdout (output); at least one:
+#                    readiness.shell.cmd        = "curl -s http://localhost:3000/health"
+#                    readiness.shell.output     = "\"status\":\"ok\""
+#                    readiness.shell.exit_codes = [0]
+#                * http -- poll a URL; ready on an allowed status and/or body:
+#                    readiness.http.url    = "http://localhost:3000/health"
+#                    readiness.http.status = [200, 204]   # int or list; default 200
+#                    readiness.http.output = "\"status\":\"ok\""
+#                * output -- watch the process's OWN stdout for a substring:
+#                    readiness.output = "Listening on"
+#                * delay -- sleep a fixed duration after launch, then mark ready:
 #                    readiness.delay = "3s"
 #   depends_on  - (optional) list of process names that must be ready first
 #   env_file    - (optional) path to a dotenv-style file for this process only
@@ -50,9 +54,10 @@ env_file = ".env"
 environment = { COMPOSE_PROJECT = "myapp", LOG_LEVEL = "info" }
 
 [db]
-command   = "postgres -D /usr/local/var/postgres"
-readiness = "pg_isready -q"
-color     = "bright-blue"
+command                    = "postgres -D /usr/local/var/postgres"
+readiness.shell.cmd        = "pg_isready -q"
+readiness.shell.exit_codes = [0]
+color                      = "bright-blue"
 
 [migrations]
 command    = "rake db:migrate"
@@ -61,23 +66,24 @@ depends_on = ["db"]
 
 # Ready only once the health endpoint returns 200 *and* reports status "ok".
 [backend]
-command              = "bin/rails server -p 3000"
-depends_on           = ["migrations"]
-readiness.command    = "curl -s http://localhost:3000/health"
-readiness.exit_codes = [0]
-readiness.output     = "\"status\":\"ok\""
-readiness.timeout    = 60
-readiness.interval   = 2
-environment          = { RAILS_ENV = "development", PORT = "3000" }
-log_file             = "tmp/backend.log"
-name                 = "rails"
-color                = "#ff8800"
+command                 = "bin/rails server -p 3000"
+depends_on              = ["migrations"]
+readiness.http.url      = "http://localhost:3000/health"
+readiness.http.status   = 200
+readiness.http.output   = "\"status\":\"ok\""
+readiness.timeout       = 60
+readiness.interval      = 2
+environment             = { RAILS_ENV = "development", PORT = "3000" }
+log_file                = "tmp/backend.log"
+name                    = "rails"
+color                   = "#ff8800"
 
 [frontend]
-command     = "npm run dev"
-depends_on  = ["backend"]
-env_file    = ".env.frontend"
-environment = { PORT = "5173", NODE_ENV = "development" }
+command          = "npm run dev"
+depends_on       = ["backend"]
+env_file         = ".env.frontend"
+environment      = { PORT = "5173", NODE_ENV = "development" }
+readiness.output = "ready in"
 
 # No easy health probe: give it a fixed warm-up before dependents start.
 [mailhog]

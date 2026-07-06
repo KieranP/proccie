@@ -14,7 +14,7 @@ use std::time::Duration;
 
 pub use error::{ConfigError, ConfigWarning, ValidationIssue, ValidationIssueKind};
 pub use graph::{Adjacency, dependents, reachable, topo_order};
-pub use types::{ExitCodes, Process, Readiness, ReadyWhen, parse_duration};
+pub use types::{ExitCodes, Process, Readiness, ReadyWhen, StatusCodes, parse_duration};
 
 /// Maximum time to wait for a readiness command to succeed before
 /// considering the dependency failed.

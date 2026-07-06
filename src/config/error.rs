@@ -97,17 +97,26 @@ pub enum ValidationIssueKind {
     #[error("\"exit_codes\" and \"readiness\" are mutually exclusive")]
     ExitCodesAndReadiness,
 
-    #[error("readiness command cannot be empty")]
+    #[error("readiness shell \"cmd\" cannot be empty")]
     EmptyReadinessCommand,
 
-    #[error("readiness command requires \"exit_codes\" or \"output\" to define when it passes")]
+    #[error("readiness shell requires \"exit_codes\" or \"output\" to define when it passes")]
     ReadinessMissingCheck,
 
-    #[error("readiness \"exit_codes\" cannot be empty")]
+    #[error("readiness shell \"exit_codes\" cannot be empty")]
     EmptyReadinessExitCodes,
 
     #[error("readiness \"output\" cannot be empty")]
     EmptyReadinessOutput,
+
+    #[error("readiness http \"url\" {0:?} is not a valid http(s) URL")]
+    InvalidReadinessUrl(String),
+
+    #[error("readiness http \"status\" cannot be empty")]
+    EmptyReadinessStatus,
+
+    #[error("readiness http \"status\" {0} is not a valid HTTP status code (100–599)")]
+    InvalidReadinessStatus(u16),
 
     #[error(
         "\"max_retries\" has no effect with \"readiness\" (retries fire on exit, not a failed readiness check)"

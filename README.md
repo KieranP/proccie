@@ -27,8 +27,9 @@ Create a `Procfile.toml` in your project root:
 
 ```toml
 [db]
-command   = "postgres -D /usr/local/var/postgres"
-readiness = "pg_isready -q"
+command                    = "postgres -D /usr/local/var/postgres"
+readiness.shell.cmd        = "pg_isready -q"
+readiness.shell.exit_codes = [0]
 
 [web]
 command    = "bin/rails server -p 3000"

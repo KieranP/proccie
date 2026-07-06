@@ -46,27 +46,56 @@ fn validate_process(
         if !proc.exit_codes.is_empty() {
             issue(ValidationIssueKind::ExitCodesAndReadiness);
         }
-        if let Readiness::Command {
-            command,
-            exit_codes,
-            output,
-            ..
-        } = readiness
-        {
-            if command.is_empty() {
-                issue(ValidationIssueKind::EmptyReadinessCommand);
+        match readiness {
+            Readiness::Shell {
+                cmd,
+                exit_codes,
+                output,
+                ..
+            } => {
+                if cmd.is_empty() {
+                    issue(ValidationIssueKind::EmptyReadinessCommand);
+                }
+                // A command needs a pass condition: an allowed exit code set or an output match.
+                if exit_codes.is_none() && output.is_none() {
+                    issue(ValidationIssueKind::ReadinessMissingCheck);
+                }
+                // When given, neither may be empty: an empty set/string is almost certainly a mistake.
+                if exit_codes.as_ref().is_some_and(ExitCodes::is_empty) {
+                    issue(ValidationIssueKind::EmptyReadinessExitCodes);
+                }
+                if output.as_ref().is_some_and(String::is_empty) {
+                    issue(ValidationIssueKind::EmptyReadinessOutput);
+                }
             }
-            // A command needs a pass condition: an allowed exit code set or an output match.
-            if exit_codes.is_none() && output.is_none() {
-                issue(ValidationIssueKind::ReadinessMissingCheck);
+            Readiness::Http {
+                url,
+                status,
+                output,
+                ..
+            } => {
+                if !is_http_url(url) {
+                    issue(ValidationIssueKind::InvalidReadinessUrl(url.clone()));
+                }
+                if status.is_empty() {
+                    issue(ValidationIssueKind::EmptyReadinessStatus);
+                }
+                for &code in &status.0 {
+                    if !(100..=599).contains(&code) {
+                        issue(ValidationIssueKind::InvalidReadinessStatus(code));
+                    }
+                }
+                if output.as_ref().is_some_and(String::is_empty) {
+                    issue(ValidationIssueKind::EmptyReadinessOutput);
+                }
             }
-            // When given, neither may be empty: an empty set/string is almost certainly a mistake.
-            if exit_codes.as_ref().is_some_and(ExitCodes::is_empty) {
-                issue(ValidationIssueKind::EmptyReadinessExitCodes);
+            // The output watch: an empty needle would match nothing meaningful.
+            Readiness::Output { output, .. } => {
+                if output.is_empty() {
+                    issue(ValidationIssueKind::EmptyReadinessOutput);
+                }
             }
-            if output.as_ref().is_some_and(String::is_empty) {
-                issue(ValidationIssueKind::EmptyReadinessOutput);
-            }
+            Readiness::Delay(_) => {}
         }
         // Retries fire on exit, not a failed readiness window, so they'd be ignored.
         if proc.max_retries > 0 {
@@ -94,6 +123,12 @@ fn validate_process(
     {
         issue(ValidationIssueKind::InvalidColor(color.clone()));
     }
+}
+
+/// Whether `url` parses as an absolute `http`/`https` URL — the schemes the
+/// readiness probe can actually request.
+fn is_http_url(url: &str) -> bool {
+    reqwest::Url::parse(url).is_ok_and(|u| matches!(u.scheme(), "http" | "https"))
 }
 
 /// Flags any display name shared by more than one process: names label tabs

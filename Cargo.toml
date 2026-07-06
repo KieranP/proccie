@@ -24,6 +24,8 @@ dotenvy = "0.15"
 humantime = "2"
 nix = { version = "0.31", features = ["signal", "process"] }
 ratatui = { version = "0.30.2", features = ["unstable-rendered-line-info"] }
+# HTTP readiness probing; rustls avoids a system OpenSSL dependency.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 terminal-colorsaurus = "1.0.3"
 thiserror = "2"

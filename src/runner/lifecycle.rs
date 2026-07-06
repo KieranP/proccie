@@ -17,7 +17,7 @@ use tokio::task::JoinHandle;
 use tokio::time::sleep;
 
 use super::{DepState, Shared};
-use crate::config::{Process, ReadyWhen};
+use crate::config::{Process, Readiness, ReadyWhen};
 use crate::logger::TaggedWriter;
 use crate::service::{Service, ServiceStatus};
 
@@ -36,6 +36,20 @@ const OUTPUT_DRAIN_MAX: Duration = Duration::from_secs(10);
 /// Chunks buffered between the async reader and the blocking stream writer; a
 /// stalled consumer backs up through this to the pipe rather than growing unbounded.
 const PUMP_QUEUE_DEPTH: usize = 256;
+
+/// The readiness poller's handoff to the run: the live child's incarnation sender,
+/// and — in output-watch mode — the needle and the signal the pump trips on match.
+pub(crate) struct ReadinessLink {
+    running: watch::Sender<Option<u64>>,
+    output: Option<OutputWatch>,
+}
+
+/// The output-watch handoff, moved to the pump so its EOF drops the last sender:
+/// the needle to find and the signal set once the process's own output contains it.
+struct OutputWatch {
+    needle: Arc<str>,
+    matched: watch::Sender<bool>,
+}
 
 /// How a single process execution ended.
 enum RunResult {
@@ -67,12 +81,16 @@ impl Shared {
             return;
         }
 
-        let readiness = self.spawn_readiness_poller(svc);
-        self.run_attempts(svc, readiness.as_ref().map(|(tx, _)| tx))
-            .await;
+        // Split the link: the run keeps the liveness sender for its whole life, but
+        // hands the output-watch sender to the pump so its EOF drops the last sender.
+        let (running, output, task) = match self.spawn_readiness_poller(svc) {
+            Some((ReadinessLink { running, output }, task)) => (Some(running), output, Some(task)),
+            None => (None, None, None),
+        };
+        self.run_attempts(svc, running.as_ref(), output).await;
 
         // Stop the poller; if a check is still in flight, kill_on_drop reaps it.
-        if let Some((_, task)) = readiness {
+        if let Some(task) = task {
             task.abort();
         }
     }
@@ -85,22 +103,41 @@ impl Shared {
     }
 
     /// Spawns the readiness poller for a readiness-mode service (`None` otherwise),
-    /// returning its liveness sender (the live child's incarnation) and task handle.
+    /// returning the link it shares with each run and its task handle.
     fn spawn_readiness_poller(
         self: &Arc<Self>,
         svc: &Service,
-    ) -> Option<(watch::Sender<Option<u64>>, JoinHandle<()>)> {
-        if !matches!(svc.process().ready_when(), ReadyWhen::ReadinessPass(_)) {
+    ) -> Option<(ReadinessLink, JoinHandle<()>)> {
+        let ReadyWhen::ReadinessPass(readiness) = svc.process().ready_when() else {
             return None;
-        }
+        };
         let (tx, rx) = watch::channel(None);
+        // Output-watch mode needs a channel the pump trips on match; other modes don't.
+        let (output, matched_rx) = match readiness {
+            Readiness::Output { output, .. } => {
+                let (matched, matched_rx) = watch::channel(false);
+                let watch = OutputWatch {
+                    needle: Arc::from(output.as_str()),
+                    matched,
+                };
+                (Some(watch), Some(matched_rx))
+            }
+            _ => (None, None),
+        };
         // Share the process by refcount rather than deep-cloning its env for the poll's lifetime.
         let task = tokio::spawn(Arc::clone(self).poll_readiness(
             svc.key().to_owned(),
             Arc::clone(svc.process()),
             rx,
+            matched_rx,
         ));
-        Some((tx, task))
+        Some((
+            ReadinessLink {
+                running: tx,
+                output,
+            },
+            task,
+        ))
     }
 
     /// Launches the process with retries, failing dependents and shutting down
@@ -109,6 +146,7 @@ impl Shared {
         self: &Arc<Self>,
         svc: &Service,
         running: Option<&watch::Sender<Option<u64>>>,
+        mut output: Option<OutputWatch>,
     ) {
         let proc = svc.process();
         let name = svc.key();
@@ -124,7 +162,12 @@ impl Shared {
                 return;
             }
 
-            match self.run_once(svc, running, attempt.cast_unsigned()).await {
+            // The watch is single-use: readiness (the only output-watch user) never
+            // retries, so a later attempt would leave it `None` — the pump won't scan.
+            match self
+                .run_once(svc, running, output.take(), attempt.cast_unsigned())
+                .await
+            {
                 RunResult::Expected | RunResult::Shutdown => return,
                 // An unexpected exit — clean or not — is retried while attempts remain.
                 RunResult::Completed | RunResult::Failed(_) if attempt < max_attempts => {}
@@ -166,6 +209,7 @@ impl Shared {
         self: &Arc<Self>,
         svc: &Service,
         running: Option<&watch::Sender<Option<u64>>>,
+        output_watch: Option<OutputWatch>,
         incarnation: u64,
     ) -> RunResult {
         let proc = svc.process();
@@ -200,6 +244,8 @@ impl Shared {
             Arc::clone(&self.system),
             format!("{name} output"),
             Arc::clone(&read),
+            // In output-watch mode the pump scans the stream and trips the poller.
+            output_watch,
         ));
         self.release_dependents(svc);
 
@@ -398,20 +444,26 @@ fn set_liveness(running: Option<&watch::Sender<Option<u64>>>, incarnation: Optio
 }
 
 /// Copies a child output stream into the service's writer until EOF or a read
-/// error, flushing the trailing partial line. `read` counts bytes pumped.
+/// error, flushing the trailing partial line. `read` counts bytes pumped; when
+/// `output_watch` is set, each chunk is also scanned for the readiness needle.
 async fn pump<R: AsyncRead + Unpin>(
     mut reader: R,
     writer: Arc<TaggedWriter>,
     system: Arc<TaggedWriter>,
     label: String,
     read: Arc<AtomicU64>,
+    output_watch: Option<OutputWatch>,
 ) {
     let mut buf = [0u8; 8192];
+    let mut scanner = output_watch.map(OutputScanner::new);
 
     if writer.is_store_mode() {
         // Store writes only touch memory, so run them inline on this task.
         while let Some(n) = read_step(&mut reader, &mut buf, &system, &label).await {
             read.fetch_add(n as u64, Ordering::Relaxed);
+            if let Some(s) = &mut scanner {
+                s.feed(&buf[..n]);
+            }
             writer.write(&buf[..n]);
         }
         writer.flush();
@@ -430,6 +482,10 @@ async fn pump<R: AsyncRead + Unpin>(
     });
     while let Some(n) = read_step(&mut reader, &mut buf, &system, &label).await {
         read.fetch_add(n as u64, Ordering::Relaxed);
+        // Scan before handing off: readiness must not wait on a stalled sink.
+        if let Some(s) = &mut scanner {
+            s.feed(&buf[..n]);
+        }
         // A closed channel means the sink died; nothing more can be written.
         if tx.send(buf[..n].to_vec()).await.is_err() {
             break;
@@ -438,6 +494,49 @@ async fn pump<R: AsyncRead + Unpin>(
     // Dropping `tx` closes the channel, ending the sink (which does the final flush).
     drop(tx);
     let _ = sink.await;
+}
+
+/// Scans a child's output for a readiness needle (ANSI stripped, carrying a tail
+/// across reads), tripping `matched` on the first occurrence, then goes inert.
+struct OutputScanner {
+    watch: OutputWatch,
+    /// Stateful ANSI stripper; holds an escape sequence split across reads.
+    strip: anstream::adapter::StripBytes,
+    carry: Vec<u8>,
+    done: bool,
+}
+
+impl OutputScanner {
+    fn new(watch: OutputWatch) -> OutputScanner {
+        OutputScanner {
+            watch,
+            strip: anstream::adapter::StripBytes::new(),
+            carry: Vec::new(),
+            done: false,
+        }
+    }
+
+    /// Feeds one chunk, signalling readiness the first time the needle appears.
+    fn feed(&mut self, chunk: &[u8]) {
+        if self.done {
+            return;
+        }
+        // Prepend the carry, then append this chunk's printable (ANSI-stripped) bytes.
+        let mut hay = std::mem::take(&mut self.carry);
+        for printable in self.strip.strip_next(chunk) {
+            hay.extend_from_slice(printable);
+        }
+        let needle = self.watch.needle.as_bytes();
+        if super::contains_bytes(&hay, needle) {
+            self.done = true;
+            // A dropped receiver means the poller is gone; the match no longer matters.
+            let _ = self.watch.matched.send(true);
+            return;
+        }
+        // Retain only enough tail to complete a needle that spans the next read.
+        let keep = needle.len().saturating_sub(1);
+        self.carry = hay.split_off(hay.len().saturating_sub(keep));
+    }
 }
 
 /// One read into `buf`: returns the chunk length, or `None` on EOF or a (logged)
