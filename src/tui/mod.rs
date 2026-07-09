@@ -60,7 +60,15 @@ pub async fn run(
 
     // If the user quit before everything exited, stop the rest, then await it.
     runner.shutdown();
-    let code = run_handle.await.unwrap_or(1);
+    // The terminal is already restored, so a supervisor panic can surface on
+    // stderr rather than being silently collapsed into a bare exit code.
+    let code = match run_handle.await {
+        Ok(code) => code,
+        Err(e) => {
+            eprintln!("error: supervisor task terminated abnormally: {e}");
+            1
+        }
+    };
     result.map(|()| code)
 }
 

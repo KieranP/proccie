@@ -15,7 +15,7 @@ use proccie::runner::Runner;
 
 use proccie::logger::LogLevel;
 
-use common::{SharedBuf, build_logger, build_services, wait_for_output, write_config};
+use common::{SharedBuf, build_logger, build_services, wait_for_output, wait_until, write_config};
 
 const TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -59,14 +59,7 @@ fn is_alive(pid: i32) -> bool {
 
 /// Polls until `pid` is gone (init reaps the killed zombie) or `timeout` elapses.
 async fn wait_until_dead(pid: i32, timeout: Duration) -> bool {
-    let deadline = std::time::Instant::now() + timeout;
-    while std::time::Instant::now() < deadline {
-        if !is_alive(pid) {
-            return true;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    !is_alive(pid)
+    wait_until(|| !is_alive(pid), timeout).await
 }
 
 /// Binds a throwaway HTTP server on `127.0.0.1` that answers every request with
@@ -502,6 +495,32 @@ async fn readiness_output_watch_matches_through_ansi_color_codes() {
 [api]
 command           = "printf '\\033[32mListen\\033[0ming on :8080\\033[0m\\n' && sleep 30"
 readiness.output  = "Listening on"
+readiness.timeout = 5
+
+[frontend]
+command    = "echo frontend-started"
+exit_codes = [0]
+depends_on = ["api"]
+"#,
+    );
+
+    let handle = run_in_background(&runner);
+    assert!(wait_for_output(&out, "frontend-started", Duration::from_secs(10)).await);
+    assert!(out.contents().contains("readiness check passed"));
+
+    runner.shutdown();
+    handle.await.unwrap();
+}
+
+#[tokio::test]
+async fn readiness_output_watch_is_smart_case() {
+    // An all-lowercase needle matches case-insensitively (like the log search),
+    // so the mixed-case banner still trips readiness.
+    let (runner, out, _dir) = make_runner(
+        r#"
+[api]
+command           = "echo 'Listening on :8080' && sleep 30"
+readiness.output  = "listening on"
 readiness.timeout = 5
 
 [frontend]
@@ -1179,6 +1198,293 @@ depends_on = ["parent"]
     assert!(
         out.contents().contains("force-stopping child"),
         "{}",
+        out.contents()
+    );
+}
+
+// --- restart ---
+
+/// Number of times `name` has been launched, counting the `starting <name>:`
+/// system log line (emitted once per launch — unlike a marker the command
+/// echoes, which would also appear in that same line's logged command string).
+fn launch_count(out: &SharedBuf, name: &str) -> usize {
+    out.contents().matches(&format!("starting {name}:")).count()
+}
+
+#[tokio::test]
+async fn restart_relaunches_a_running_service() {
+    // Restarting a live service stops it, notes the restart, and brings it back
+    // (a second launch) without failing the run.
+    let (runner, out, _dir) = make_runner("[web]\ncommand = \"echo web-up; sleep 30\"\n");
+
+    let handle = run_in_background(&runner);
+    assert!(wait_for_output(&out, "web-up", TIMEOUT).await);
+
+    runner.restart_service("web");
+
+    assert!(
+        wait_for_output(&out, "Restarting", Duration::from_secs(5)).await,
+        "{}",
+        out.contents()
+    );
+    assert!(
+        wait_until(|| launch_count(&out, "web") >= 2, TIMEOUT).await,
+        "web did not relaunch: {}",
+        out.contents()
+    );
+
+    // The fresh instance is still running; the run has not ended.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!handle.is_finished(), "run ended after a restart");
+
+    runner.shutdown();
+    assert_eq!(handle.await.unwrap(), 0, "{}", out.contents());
+}
+
+#[tokio::test]
+async fn restart_relaunches_the_whole_subtree() {
+    // Restarting a dependency takes its dependents down and brings the whole
+    // subtree back, re-establishing the dependency ordering on relaunch.
+    let (runner, out, _dir) = make_runner(
+        r#"
+[web]
+command = "echo web-up; sleep 30"
+
+[worker]
+command = "echo worker-up; sleep 30"
+depends_on = ["web"]
+"#,
+    );
+
+    let handle = run_in_background(&runner);
+    assert!(wait_for_output(&out, "worker-up", TIMEOUT).await);
+
+    runner.restart_service("web");
+
+    assert!(
+        wait_until(
+            || launch_count(&out, "web") >= 2 && launch_count(&out, "worker") >= 2,
+            TIMEOUT
+        )
+        .await,
+        "subtree did not fully relaunch: {}",
+        out.contents()
+    );
+
+    runner.shutdown();
+    assert_eq!(handle.await.unwrap(), 0, "{}", out.contents());
+}
+
+#[tokio::test]
+async fn restart_resurrects_a_manually_stopped_dependent() {
+    // Restarting a dependency brings its whole subtree back — including a
+    // dependent the user had manually stopped beforehand. The explicit stop does
+    // not survive a restart of the service it hangs off.
+    let (runner, out, _dir) = make_runner(
+        r#"
+[web]
+command = "echo web-up; sleep 30"
+
+[worker]
+command = "echo worker-up; sleep 30"
+depends_on = ["web"]
+"#,
+    );
+
+    let handle = run_in_background(&runner);
+    assert!(wait_for_output(&out, "worker-up", TIMEOUT).await);
+
+    // Manually stop the dependent; it settles into a terminal stopped state.
+    runner.stop_service("worker");
+    assert!(
+        wait_for_output(&out, "Manually shut down", TIMEOUT).await,
+        "worker was not manually stopped: {}",
+        out.contents()
+    );
+    assert_eq!(launch_count(&out, "worker"), 1, "{}", out.contents());
+
+    // Restarting the dependency relaunches the whole subtree, reviving worker.
+    runner.restart_service("web");
+    assert!(
+        wait_until(
+            || launch_count(&out, "web") >= 2 && launch_count(&out, "worker") >= 2,
+            TIMEOUT
+        )
+        .await,
+        "restart did not resurrect the stopped dependent: {}",
+        out.contents()
+    );
+
+    runner.shutdown();
+    assert_eq!(handle.await.unwrap(), 0, "{}", out.contents());
+}
+
+#[tokio::test]
+async fn restart_relaunches_an_already_exited_service() {
+    // A one-shot that has already completed can be restarted while another
+    // service keeps the run alive; its relaunch needs no in-flight task to join.
+    let (runner, out, _dir) = make_runner(
+        r#"
+[job]
+command    = "echo job-ran"
+exit_codes = [0]
+
+[keep]
+command = "sleep 30"
+"#,
+    );
+
+    let handle = run_in_background(&runner);
+    assert!(wait_for_output(&out, "job completed with expected exit code", TIMEOUT).await);
+    assert_eq!(launch_count(&out, "job"), 1, "{}", out.contents());
+
+    runner.restart_service("job");
+
+    assert!(
+        wait_until(|| launch_count(&out, "job") >= 2, TIMEOUT).await,
+        "completed job did not relaunch: {}",
+        out.contents()
+    );
+
+    runner.shutdown();
+    assert_eq!(handle.await.unwrap(), 0, "{}", out.contents());
+}
+
+#[tokio::test]
+async fn restart_survives_past_the_stop_grace() {
+    // Regression: the stop-phase SIGKILL escalation must not fire on the fresh
+    // instance. The relaunched service reuses its group name, so a timer that
+    // re-read the live groups at fire time would kill it. Wait past the grace
+    // (2s per `make_runner`) and confirm the run is still alive and healthy.
+    let (runner, out, _dir) = make_runner("[web]\ncommand = \"echo web-up; sleep 30\"\n");
+
+    let handle = run_in_background(&runner);
+    assert!(wait_for_output(&out, "web-up", TIMEOUT).await);
+
+    runner.restart_service("web");
+    assert!(
+        wait_until(|| launch_count(&out, "web") >= 2, TIMEOUT).await,
+        "web did not relaunch: {}",
+        out.contents()
+    );
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    assert!(
+        !handle.is_finished(),
+        "restart killed the fresh instance and ended the run: {}",
+        out.contents()
+    );
+    assert_eq!(
+        launch_count(&out, "web"),
+        2,
+        "web launched more than the one restart: {}",
+        out.contents()
+    );
+
+    runner.shutdown();
+    assert_eq!(handle.await.unwrap(), 0, "{}", out.contents());
+}
+
+#[tokio::test]
+async fn restart_of_one_service_is_not_blocked_by_another() {
+    // Independent restarts get independent batches: restarting `slow` (which
+    // ignores SIGTERM and only dies at the 2s SIGKILL grace) must not hold up an
+    // unrelated restart of `quick`, which dies on SIGTERM at once.
+    let (runner, out, _dir) = make_runner(
+        r#"
+[slow]
+command = "trap '' TERM; echo slow-up; while true; do sleep 0.2; done"
+
+[quick]
+command = "echo quick-up; sleep 30"
+"#,
+    );
+
+    let handle = run_in_background(&runner);
+    assert!(wait_for_output(&out, "slow-up", TIMEOUT).await);
+    assert!(wait_for_output(&out, "quick-up", TIMEOUT).await);
+
+    runner.restart_service("slow");
+    runner.restart_service("quick");
+
+    // `quick` must relaunch well before `slow`'s SIGKILL grace elapses; a shared
+    // batch would make it wait for `slow` to die first.
+    assert!(
+        wait_until(
+            || launch_count(&out, "quick") >= 2,
+            Duration::from_millis(1500)
+        )
+        .await,
+        "quick did not relaunch independently of slow: {}",
+        out.contents()
+    );
+    assert_eq!(
+        launch_count(&out, "slow"),
+        1,
+        "slow relaunched too — it should still be mid force-kill: {}",
+        out.contents()
+    );
+
+    runner.shutdown();
+    handle.await.unwrap();
+}
+
+#[tokio::test]
+async fn restart_interrupts_a_dependency_wait() {
+    // A service parked waiting on a slow dependency must observe its own restart
+    // at once, rather than staying blocked (and un-relaunchable) until the
+    // dependency finally resolves.
+    let (runner, out, _dir) = make_runner(
+        r#"
+[db]
+command = "echo db-up; sleep 30"
+readiness.delay = 30
+
+[app]
+command = "echo app-up; sleep 30"
+depends_on = ["db"]
+"#,
+    );
+
+    let handle = run_in_background(&runner);
+    // `app` is now blocked on db's 30s readiness delay.
+    assert!(wait_for_output(&out, "app waiting for db", TIMEOUT).await);
+
+    runner.restart_service("app");
+
+    assert!(
+        wait_for_output(&out, "app stopped while waiting for db", TIMEOUT).await,
+        "restart did not interrupt app's dependency wait: {}",
+        out.contents()
+    );
+
+    runner.shutdown();
+    handle.await.unwrap();
+}
+
+#[tokio::test]
+async fn restart_is_refused_after_the_run_has_ended() {
+    // Once the run has ended on its own, a late restart must be refused rather than
+    // queue a batch the (now-exited) run loop can never fire — which would leave
+    // any_running() pinned true forever and block a clean quit.
+    let (runner, out, _dir) = make_runner("[job]\ncommand = \"echo job-ran\"\nexit_codes = [0]\n");
+
+    let handle = run_in_background(&runner);
+    assert_eq!(handle.await.unwrap(), 0, "{}", out.contents());
+
+    runner.restart_service("job");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    assert_eq!(
+        launch_count(&out, "job"),
+        1,
+        "job relaunched after the run had ended: {}",
+        out.contents()
+    );
+    assert!(
+        !runner.any_running(),
+        "any_running() pinned true by a refused restart: {}",
         out.contents()
     );
 }

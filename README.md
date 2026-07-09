@@ -5,7 +5,8 @@ A process manager that runs and supervises multiple processes, like
 [foreman](https://github.com/ddollar/foreman), with an enhanced Procfile format
 adding dependencies, readiness checks, retries, per-process env and log files,
 and color-coded output. On a terminal it opens an interactive TUI — a tabbed,
-searchable log viewer with one tab per process.
+searchable log viewer with one tab per process, plus per-service stop and
+restart.
 
 ## Install
 

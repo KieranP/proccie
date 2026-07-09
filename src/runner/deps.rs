@@ -1,9 +1,12 @@
+use tokio::sync::watch;
+
 use crate::config::ReadyWhen;
 
 use super::Shared;
 
 /// How a dependency resolved. Each process broadcasts exactly one terminal
-/// state to everything waiting on it.
+/// state to everything waiting on it (and a service watches its own gate for
+/// `Stopped` to interrupt a wait when it is stopped or restarted).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DepState {
     /// Not yet resolved.
@@ -12,6 +15,8 @@ pub(crate) enum DepState {
     Ready,
     /// Failed to become ready.
     Failed,
+    /// Stopped (a manual stop or a restart) before resolving.
+    Stopped,
 }
 
 impl Shared {
@@ -55,6 +60,9 @@ impl Shared {
             return true;
         };
         let mut rx = tx.subscribe();
+        // Also watch our own gate: a stop/restart of THIS service flips it to
+        // `Stopped`, which must interrupt a wait on an upstream dependency.
+        let mut self_gate = self.deps.get(name).map(watch::Sender::subscribe);
 
         tokio::select! {
             () = self.token.cancelled() => {
@@ -70,6 +78,22 @@ impl Shared {
                 }
                 ready
             }
+            () = wait_for_own_stop(&mut self_gate) => {
+                self.system.debug(format!("{name} stopped while waiting for {dep}"));
+                false
+            }
         }
+    }
+}
+
+/// Resolves once `rx` (a service's own gate) reports it was `Stopped`; never
+/// resolves when the gate is absent, so it simply yields to the other select
+/// branches.
+async fn wait_for_own_stop(rx: &mut Option<watch::Receiver<DepState>>) {
+    match rx {
+        Some(rx) => {
+            let _ = rx.wait_for(|s| *s == DepState::Stopped).await;
+        }
+        None => std::future::pending().await,
     }
 }

@@ -3,7 +3,7 @@ use std::path::Path;
 
 use super::error::ConfigError;
 use super::procfile::Parsed;
-use super::types::Process;
+use super::schema::Process;
 
 /// Snapshot of the OS environment. Non-UTF-8 vars are skipped rather than panic.
 pub fn os_env() -> BTreeMap<String, String> {

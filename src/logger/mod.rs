@@ -9,7 +9,8 @@ mod writer;
 pub use level::{Emphasis, LogLevel};
 pub use line::{LogLine, Source};
 pub use store::{
-    LogStore, MAX_LINES, merge_tail, merge_tail_matching, query_is_case_sensitive, text_matches,
+    LogStore, MAX_LINES, bytes_contain, merge_tail, merge_tail_matching, query_is_case_sensitive,
+    text_matches,
 };
 pub use writer::{MAX_LINE_BUFFER, TaggedWriter, leveled_tag, line_prefix};
 
@@ -37,7 +38,7 @@ pub enum Destination {
     Store,
 }
 
-/// Owns the shared [`Core`] (destination, pad width, level) and hands out
+/// Owns the shared `Core` (destination, pad width, level) and hands out
 /// [`TaggedWriter`]s that route through it, plus a built-in `system` writer.
 pub struct Logger {
     core: Arc<Core>,

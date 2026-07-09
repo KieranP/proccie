@@ -22,7 +22,7 @@ Rust (stable, 1.95+) process manager on Tokio. Build/test/lint: [DEVELOP.md](DEV
 - Library returns typed errors (`thiserror`); the binary renders them.
 - No `unwrap()`/`expect()` (they panic) -- return a typed error or match.
 - Concurrency: Tokio tasks, `watch` for readiness, `CancellationToken` for shutdown.
-- Terse comments: doc ≤2 lines, inline ≤1.
+- Terse comments: doc comments ≤4 lines, inline comments ≤2 lines.
 - Env keys/values must be valid UTF-8; non-UTF-8 OS vars are skipped.
 - Function order: each struct/enum directly above its `impl`. Within an `impl`:
   associated consts, public then private static fns, public then private instance

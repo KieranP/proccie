@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use super::error::{ConfigError, ValidationIssue, ValidationIssueKind};
 use super::graph;
-use super::types::{ExitCodes, Process, Readiness};
+use super::schema::{ExitCodes, Process, Readiness};
 use crate::theme::parse_color;
 
 /// Checks every process for correctness, then detects dependency cycles.
@@ -60,7 +60,7 @@ fn validate_process(
                 if exit_codes.is_none() && output.is_none() {
                     issue(ValidationIssueKind::ReadinessMissingCheck);
                 }
-                // When given, neither may be empty: an empty set/string is almost certainly a mistake.
+                // When given, neither may be empty: an empty set/string is likely a mistake.
                 if exit_codes.as_ref().is_some_and(ExitCodes::is_empty) {
                     issue(ValidationIssueKind::EmptyReadinessExitCodes);
                 }

@@ -95,7 +95,7 @@ impl Prefixes {
     }
 }
 
-/// A log sink for one tag: the shared [`Core`], prefix sets, the optional log
+/// A log sink for one tag: the shared `Core`, prefix sets, the optional log
 /// file, its store, and a line buffer. Created via [`Logger::tagged_writer`](super::Logger).
 pub struct TaggedWriter {
     core: Arc<Core>,

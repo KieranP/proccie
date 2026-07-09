@@ -183,11 +183,14 @@ pub fn merge_tail_matching<'a>(
 /// Allocation-free substring test; `case_sensitive` picks exact vs ASCII-fold.
 /// An empty needle matches everything (an in-progress search shows all lines).
 pub fn text_matches(haystack: &str, needle: &str, case_sensitive: bool) -> bool {
-    if needle.is_empty() {
-        return true;
-    }
-    let needle = needle.as_bytes();
-    haystack.as_bytes().windows(needle.len()).any(|window| {
+    needle.is_empty() || bytes_contain(haystack.as_bytes(), needle.as_bytes(), case_sensitive)
+}
+
+/// Windowed byte-substring test; `case_sensitive` picks exact vs ASCII-fold. The
+/// needle must be non-empty (`windows(0)` panics); callers apply their own
+/// empty-needle policy. Shared by [`text_matches`] and the runner's readiness match.
+pub fn bytes_contain(haystack: &[u8], needle: &[u8], case_sensitive: bool) -> bool {
+    haystack.windows(needle.len()).any(|window| {
         if case_sensitive {
             window == needle
         } else {

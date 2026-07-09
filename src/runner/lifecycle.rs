@@ -2,66 +2,35 @@
 //! retry on failure, and classify the exit. Methods on [`Shared`].
 
 use std::os::unix::process::ExitStatusExt;
-use std::process::{ExitStatus, Stdio};
+use std::process::Stdio;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
 use nix::sys::signal::{Signal, killpg};
 use nix::unistd::Pid;
-use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::net::unix::pipe;
 use tokio::process::Child;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
 
+use super::exit::{RunResult, exit_code_of};
+use super::probe::Needle;
+use super::pump::{OutputWatch, drain_output, pump};
 use super::{DepState, Shared};
 use crate::config::{Process, Readiness, ReadyWhen};
-use crate::logger::TaggedWriter;
-use crate::service::{Service, ServiceStatus};
+use crate::service::Service;
 
 /// Backoff between a failed attempt and its retry, so a process that crashes
 /// immediately can't spin through its retries with no pause.
 const RETRY_DELAY: Duration = Duration::from_millis(500);
-
-/// Idle grace while draining output after a child exits: the pump is abandoned
-/// once no further output arrives for this long (a lingering grandchild's open pipe).
-const OUTPUT_DRAIN_GRACE: Duration = Duration::from_secs(2);
-
-/// Absolute cap on draining, so a grandchild that keeps *writing* (never idle)
-/// can't drain forever and hang the run; the idle grace handles the common case.
-const OUTPUT_DRAIN_MAX: Duration = Duration::from_secs(10);
-
-/// Chunks buffered between the async reader and the blocking stream writer; a
-/// stalled consumer backs up through this to the pipe rather than growing unbounded.
-const PUMP_QUEUE_DEPTH: usize = 256;
 
 /// The readiness poller's handoff to the run: the live child's incarnation sender,
 /// and — in output-watch mode — the needle and the signal the pump trips on match.
 pub(crate) struct ReadinessLink {
     running: watch::Sender<Option<u64>>,
     output: Option<OutputWatch>,
-}
-
-/// The output-watch handoff, moved to the pump so its EOF drops the last sender:
-/// the needle to find and the signal set once the process's own output contains it.
-struct OutputWatch {
-    needle: Arc<str>,
-    matched: watch::Sender<bool>,
-}
-
-/// How a single process execution ended.
-enum RunResult {
-    /// Exited with an expected code.
-    Expected,
-    /// Exited cleanly (code 0) but wasn't configured to — retried like a failure,
-    /// then terminal (as a completion, not a failure) once attempts are exhausted.
-    Completed,
-    /// Exited with an unexpected code (or never spawned), to propagate if terminal.
-    Failed(i32),
-    /// Exited because a shutdown or a manual stop was in progress.
-    Shutdown,
 }
 
 impl Shared {
@@ -75,7 +44,7 @@ impl Shared {
         let deps_ok = self
             .wait_for_deps(svc.key(), &svc.process().depends_on)
             .await;
-        // Can't start (manual stop, failed dependency, or shutdown): mark it terminal and fail its waiters.
+        // Can't start (stopped, failed dep, or shutdown): mark it terminal and fail its waiters.
         if self.is_stopped(svc.key()) || !deps_ok || self.token.is_cancelled() {
             self.abandon(svc);
             return;
@@ -117,7 +86,7 @@ impl Shared {
             Readiness::Output { output, .. } => {
                 let (matched, matched_rx) = watch::channel(false);
                 let watch = OutputWatch {
-                    needle: Arc::from(output.as_str()),
+                    needle: Needle::new(output.clone()),
                     matched,
                 };
                 (Some(watch), Some(matched_rx))
@@ -232,7 +201,7 @@ impl Shared {
             return RunResult::Failed(1);
         };
         let group = Pid::from_raw(pid.cast_signed());
-        // register_group marks the service Running under the state lock, so a racing stop isn't lost.
+        // register_group marks it Running under the state lock, so a racing stop isn't lost.
         self.register_group(svc, group);
         set_liveness(running, Some(incarnation));
 
@@ -316,123 +285,6 @@ impl Shared {
         self.lock_state().strays.insert(group, name.to_owned());
         self.escalate_stray(name.to_owned(), group);
     }
-
-    /// Settles a genuine expected completion's status at exit (atomically, before
-    /// output drains); the caller releases dependents once it returns `Some`.
-    fn settle_expected(
-        &self,
-        svc: &Service,
-        status_ok: bool,
-        signal: Option<i32>,
-        exit_code: i32,
-    ) -> Option<RunResult> {
-        let name = svc.key();
-        // Not expected if signal-killed or stopped; the CAS lets a racing stop win.
-        if status_ok
-            && signal.is_none()
-            && !self.is_stopped(name)
-            && let ReadyWhen::ExpectedExit(codes) = svc.process().ready_when()
-            && codes.allows(exit_code)
-            && svc.finish_if_active(ServiceStatus::Completed(exit_code))
-        {
-            self.system.info(format!(
-                "{name} completed with expected exit code {exit_code}"
-            ));
-            return Some(RunResult::Expected);
-        }
-        None
-    }
-
-    /// Classifies a non-completion exit: a shutdown or manual stop (including one
-    /// that landed during the output drain) isn't a failure; otherwise it is.
-    fn classify_exit(
-        &self,
-        svc: &Service,
-        signal: Option<i32>,
-        exit_code: i32,
-        is_shutdown: bool,
-    ) -> RunResult {
-        let name = svc.key();
-
-        if is_shutdown || self.is_stopped(name) {
-            self.system.debug(format!("{name} exited (shutdown)"));
-            // CAS like every terminal write, so an already-settled status survives.
-            svc.finish_if_active(ServiceStatus::Stopped);
-            return RunResult::Shutdown;
-        }
-
-        self.report_unexpected_exit(svc, signal, exit_code)
-    }
-
-    /// Classifies a non-allowed exit: a signal death or an exit outside a
-    /// configured `exit_codes` set (0 included) fails; else a clean exit completes.
-    fn report_unexpected_exit(
-        &self,
-        svc: &Service,
-        signal: Option<i32>,
-        exit_code: i32,
-    ) -> RunResult {
-        let name = svc.key();
-        match signal {
-            Some(sig) => {
-                self.system.warn(format!(
-                    "{name} terminated by {} (code {exit_code})",
-                    signal_name(sig)
-                ));
-                RunResult::Failed(exit_code)
-            }
-            // Clean exit completes only without `exit_codes`; with them, 0 isn't
-            // in the set here, so fail as code 1 (0 can't signal a failing run).
-            None if exit_code == 0 => {
-                if matches!(svc.process().ready_when(), ReadyWhen::ExpectedExit(_)) {
-                    self.system
-                        .warn(format!("{name} exited with unexpected code {exit_code}"));
-                    RunResult::Failed(1)
-                } else {
-                    RunResult::Completed
-                }
-            }
-            None => {
-                self.system
-                    .warn(format!("{name} exited with unexpected code {exit_code}"));
-                RunResult::Failed(exit_code)
-            }
-        }
-    }
-
-    /// Ends the run on a clean exit of a process that wasn't meant to exit: a
-    /// completion (not a failure), but it still stops the rest.
-    fn complete_terminally(self: &Arc<Self>, svc: &Service) {
-        let name = svc.key();
-        self.system
-            .info(format!("{name} exited cleanly, initiating shutdown"));
-        // CAS so a concurrent manual stop that already marked it Stopped wins.
-        svc.finish_if_active(ServiceStatus::Completed(0));
-        self.fail_run(name, 0);
-    }
-
-    /// Reports a process that exhausted its retries (or never started): record
-    /// the failure code and begin shutdown. The code is always non-zero.
-    fn fail_terminally(self: &Arc<Self>, svc: &Service, code: i32) {
-        debug_assert!(
-            code != 0,
-            "fail_terminally is for failures; code 0 is a completion"
-        );
-        let proc = svc.process();
-        let name = svc.key();
-        if proc.max_retries > 0 {
-            self.system.error(format!(
-                "{name}: all {} retries exhausted, initiating shutdown",
-                proc.max_retries
-            ));
-        } else {
-            self.system
-                .error(format!("{name} failed, initiating shutdown"));
-        }
-        // CAS so a concurrent manual stop that already marked it Stopped wins.
-        svc.finish_if_active(ServiceStatus::Failed(code));
-        self.fail_run(name, code);
-    }
 }
 
 /// Reports the live child's incarnation to the readiness poller:
@@ -441,158 +293,4 @@ fn set_liveness(running: Option<&watch::Sender<Option<u64>>>, incarnation: Optio
     if let Some(tx) = running {
         tx.send_replace(incarnation);
     }
-}
-
-/// Copies a child output stream into the service's writer until EOF or a read
-/// error, flushing the trailing partial line. `read` counts bytes pumped; when
-/// `output_watch` is set, each chunk is also scanned for the readiness needle.
-async fn pump<R: AsyncRead + Unpin>(
-    mut reader: R,
-    writer: Arc<TaggedWriter>,
-    system: Arc<TaggedWriter>,
-    label: String,
-    read: Arc<AtomicU64>,
-    output_watch: Option<OutputWatch>,
-) {
-    let mut buf = [0u8; 8192];
-    let mut scanner = output_watch.map(OutputScanner::new);
-
-    if writer.is_store_mode() {
-        // Store writes only touch memory, so run them inline on this task.
-        while let Some(n) = read_step(&mut reader, &mut buf, &system, &label).await {
-            read.fetch_add(n as u64, Ordering::Relaxed);
-            if let Some(s) = &mut scanner {
-                s.feed(&buf[..n]);
-            }
-            writer.write(&buf[..n]);
-        }
-        writer.flush();
-        return;
-    }
-
-    // Stream writes can block on a stalled consumer, so one blocking task drains a
-    // bounded channel; a full channel backs pressure up to the pipe (and the child).
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(PUMP_QUEUE_DEPTH);
-    let sink_writer = Arc::clone(&writer);
-    let sink = tokio::task::spawn_blocking(move || {
-        while let Some(chunk) = rx.blocking_recv() {
-            sink_writer.write(&chunk);
-        }
-        sink_writer.flush();
-    });
-    while let Some(n) = read_step(&mut reader, &mut buf, &system, &label).await {
-        read.fetch_add(n as u64, Ordering::Relaxed);
-        // Scan before handing off: readiness must not wait on a stalled sink.
-        if let Some(s) = &mut scanner {
-            s.feed(&buf[..n]);
-        }
-        // A closed channel means the sink died; nothing more can be written.
-        if tx.send(buf[..n].to_vec()).await.is_err() {
-            break;
-        }
-    }
-    // Dropping `tx` closes the channel, ending the sink (which does the final flush).
-    drop(tx);
-    let _ = sink.await;
-}
-
-/// Scans a child's output for a readiness needle (ANSI stripped, carrying a tail
-/// across reads), tripping `matched` on the first occurrence, then goes inert.
-struct OutputScanner {
-    watch: OutputWatch,
-    /// Stateful ANSI stripper; holds an escape sequence split across reads.
-    strip: anstream::adapter::StripBytes,
-    carry: Vec<u8>,
-    done: bool,
-}
-
-impl OutputScanner {
-    fn new(watch: OutputWatch) -> OutputScanner {
-        OutputScanner {
-            watch,
-            strip: anstream::adapter::StripBytes::new(),
-            carry: Vec::new(),
-            done: false,
-        }
-    }
-
-    /// Feeds one chunk, signalling readiness the first time the needle appears.
-    fn feed(&mut self, chunk: &[u8]) {
-        if self.done {
-            return;
-        }
-        // Prepend the carry, then append this chunk's printable (ANSI-stripped) bytes.
-        let mut hay = std::mem::take(&mut self.carry);
-        for printable in self.strip.strip_next(chunk) {
-            hay.extend_from_slice(printable);
-        }
-        let needle = self.watch.needle.as_bytes();
-        if super::contains_bytes(&hay, needle) {
-            self.done = true;
-            // A dropped receiver means the poller is gone; the match no longer matters.
-            let _ = self.watch.matched.send(true);
-            return;
-        }
-        // Retain only enough tail to complete a needle that spans the next read.
-        let keep = needle.len().saturating_sub(1);
-        self.carry = hay.split_off(hay.len().saturating_sub(keep));
-    }
-}
-
-/// One read into `buf`: returns the chunk length, or `None` on EOF or a (logged)
-/// read error. The shared read/EOF/error step for both pump modes.
-async fn read_step<R: AsyncRead + Unpin>(
-    reader: &mut R,
-    buf: &mut [u8],
-    system: &TaggedWriter,
-    label: &str,
-) -> Option<usize> {
-    match reader.read(buf).await {
-        Ok(0) => None,
-        Ok(n) => Some(n),
-        Err(e) => {
-            system.warn(format!("error reading {label}: {e}"));
-            None
-        }
-    }
-}
-
-/// The exit code to report: the process's own code, the shell convention
-/// 128 + signal for a signal death, or 1 when the status couldn't be obtained.
-fn exit_code_of(status: &std::io::Result<ExitStatus>, signal: Option<i32>) -> i32 {
-    match (status, signal) {
-        (Ok(s), None) => s.code().unwrap_or(1),
-        (Ok(_), Some(sig)) => 128 + sig,
-        (Err(_), _) => 1,
-    }
-}
-
-/// Drains the pump after the child exits, abandoning it once output stalls (a
-/// lingering grandchild's idle pipe) or the absolute [`OUTPUT_DRAIN_MAX`] cap.
-async fn drain_output(out_task: &mut JoinHandle<()>, read: &AtomicU64, svc: &Service) {
-    let deadline = tokio::time::Instant::now() + OUTPUT_DRAIN_MAX;
-    loop {
-        let before = read.load(Ordering::Relaxed);
-        // Wait up to the idle grace, but never past the absolute cap.
-        let step =
-            OUTPUT_DRAIN_GRACE.min(deadline.saturating_duration_since(tokio::time::Instant::now()));
-        if tokio::time::timeout(step, &mut *out_task).await.is_ok() {
-            return;
-        }
-        // Keep draining while output still flows and the cap allows it.
-        if read.load(Ordering::Relaxed) != before && tokio::time::Instant::now() < deadline {
-            continue;
-        }
-        out_task.abort();
-        // Store mode flushes inline (abort skips it); the stream sink flushes on close.
-        if svc.logger().is_store_mode() {
-            svc.logger().flush();
-        }
-        return;
-    }
-}
-
-/// Names a signal for log output (e.g. `SIGSEGV`), falling back to its number.
-fn signal_name(sig: i32) -> String {
-    Signal::try_from(sig).map_or_else(|_| format!("signal {sig}"), |s| s.as_str().to_owned())
 }

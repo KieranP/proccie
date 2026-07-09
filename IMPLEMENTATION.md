@@ -18,8 +18,10 @@ Domain layers that depend downward only:
   lifecycle `ServiceStatus`, and its own writer/store. Runner and TUI both work
   in terms of `Service`.
 - **`runner`** — orchestration (`mod`), per-process execution (`lifecycle`),
-  readiness polling (`readiness`), and dependency signalling (`deps`).
-- **`tui`** — ratatui terminal UI: tab state (`app`), the log-search box
+  exit classification (`exit`), the output pump (`pump`), readiness probing and
+  polling (`probe`, `readiness`), per-service stop/restart (`control`), global
+  shutdown/signalling (`shutdown`), and dependency signalling (`deps`).
+- **`tui`** — ratatui terminal UI: tab state and key handling (`app`), the log-search box
   (`search`), rendering split by region (`view::{tabs, viewport, footer}`), and the
   event loop (`mod`).
 
@@ -61,8 +63,9 @@ state wins and wakes all waiters. A process becomes ready:
 - **`readiness.delay`** — after a fixed sleep from first launch, provided the
   child is still live (a shutdown, stop, or exit cancels it instead).
 
-Any `output` substring is matched against ANSI-stripped text. `exit_codes` and
-`readiness` are mutually exclusive.
+Any `output` substring is matched against ANSI-stripped text, smart-case (like
+the log search): case-insensitive unless the needle has an uppercase letter.
+`exit_codes` and `readiness` are mutually exclusive.
 
 ## Retries
 
@@ -107,6 +110,29 @@ to process groups (`killpg`) so child trees are included.
 
 A finished run stays open for log review; quitting is always explicit.
 
+The SIGKILL escalations (global shutdown, a stray group, a stopped subtree, and a
+group that registers mid-stop) share one `after_grace` timer helper: spawn a
+task, wait the grace, then signal. Only the stray escalation cuts the wait short
+on a global shutdown. The subtree-stop timer targets the exact groups it
+SIGTERM'd (by pgid), so a service that has since relaunched under the same name is
+left untouched; a group that only registers after that timer captured its pgids
+schedules its own pgid-keyed escalation as it starts.
+
+## Restart
+
+`r` on a service tab restarts that service and its transitive dependents. The
+subtree is stopped like a manual stop, then queued as its own `restart_batch`;
+the run loop relaunches it (dependency-ordered) once every member's task has
+left the run's `JoinSet`. Independent restarts get independent
+batches, so one slow-dying subtree never stalls another. Waiting for the whole
+subtree to exit before resetting any dependency gate keeps a departing instance
+from leaking a stale `Ready`/`Failed` into the fresh one; a member parked waiting
+on a dependency observes its own stop at once so it can exit and relaunch. An
+already-exited service (its task long joined) is relaunched via a `Notify`
+wake-up that nudges the run loop, which also holds the run open across the brief
+gap between a stop and its queued relaunch. Restarts are refused once a global
+shutdown is underway or the run has finished.
+
 ## Logging
 
 Each service's `TaggedWriter` prefixes lines with its color-coded name and sends
@@ -131,3 +157,8 @@ buffer. A committed filter (via `Enter`) stays applied with the box closed.
 The first unexpected non-zero exit becomes proccie's exit code; a clean run
 returns 0. A process that fails to spawn fails the run with code 1, even when
 `exit_codes` is configured.
+
+## Process flow
+
+See [DIAGRAM.md](DIAGRAM.md) for an end-to-end `file::function` flowchart of the
+runtime — startup, the run loop, the per-process lifecycle, output, and teardown.

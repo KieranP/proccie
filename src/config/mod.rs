@@ -5,7 +5,7 @@ mod environment;
 mod error;
 mod graph;
 mod procfile;
-mod types;
+mod schema;
 mod validate;
 
 use std::collections::{BTreeMap, HashSet};
@@ -14,10 +14,10 @@ use std::time::Duration;
 
 pub use error::{ConfigError, ConfigWarning, ValidationIssue, ValidationIssueKind};
 pub use graph::{Adjacency, dependents, reachable, topo_order};
-pub use types::{ExitCodes, Process, Readiness, ReadyWhen, StatusCodes, parse_duration};
+pub use schema::{ExitCodes, Process, Readiness, ReadyWhen, StatusCodes};
 
-/// Maximum time to wait for a readiness command to succeed before
-/// considering the dependency failed.
+/// Default overall window for a readiness check (shell/HTTP probe or output
+/// watch) to pass; exceeding it is a startup failure that triggers shutdown.
 pub const DEFAULT_READINESS_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Time between readiness check attempts.
@@ -28,6 +28,12 @@ pub const DEFAULT_CONFIG_FILES: [&str; 2] = ["Procfile.toml", "Procfile"];
 
 /// Sibling env file auto-loaded for a plain Procfile, foreman-style, if it exists.
 const DEFAULT_ENV_FILE: &str = ".env";
+
+/// Parses a humantime duration (`"10s"`, `"500ms"`); shared by the CLI
+/// duration flags and TOML duration values so both render errors the same way.
+pub fn parse_duration(s: &str) -> Result<Duration, String> {
+    humantime::parse_duration(s).map_err(|e| format!("invalid duration {s:?}: {e}"))
+}
 
 /// The explicit path if given, else the first [`DEFAULT_CONFIG_FILES`] that exists.
 pub fn resolve_path(explicit: Option<&Path>) -> Result<PathBuf, ConfigError> {

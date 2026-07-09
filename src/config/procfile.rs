@@ -4,7 +4,7 @@ use std::path::Path;
 use toml::Value;
 
 use super::error::ConfigError;
-use super::types::Process;
+use super::schema::Process;
 
 /// The raw, parsed config before validation and environment resolution.
 pub struct Parsed {

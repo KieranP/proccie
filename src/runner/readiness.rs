@@ -2,72 +2,18 @@
 //! it passes (or the window times out), watches the process's own output, or
 //! waits out a fixed delay, until shutdown intervenes. On [`Shared`].
 
-use std::collections::BTreeMap;
-use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::watch;
-use tokio::time::{MissedTickBehavior, interval, sleep, timeout};
+use tokio::time::{MissedTickBehavior, interval, sleep};
 
+use super::probe::{Needle, Probe, build_http_client, run_one_check};
 use super::{DepState, Shared};
 use crate::config::{
-    DEFAULT_READINESS_INTERVAL, DEFAULT_READINESS_TIMEOUT, ExitCodes, Process, Readiness, ReadyWhen,
+    DEFAULT_READINESS_INTERVAL, DEFAULT_READINESS_TIMEOUT, Process, Readiness, ReadyWhen,
 };
 use crate::service::ServiceStatus;
-
-/// Per-invocation timeout for a single readiness probe (a command run or an
-/// HTTP request).
-const READINESS_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// One polled readiness probe: a shell command or an HTTP request. Owns its
-/// config so the poll loop can run it repeatedly without re-reading the config.
-enum Probe {
-    /// Run a command in the process's environment; pass on an allowed exit code
-    /// (when set) and stdout containing `output` (when set).
-    Shell {
-        cmd: String,
-        exit_codes: Option<ExitCodes>,
-        output: Option<String>,
-        env: BTreeMap<String, String>,
-    },
-    /// GET `url`; pass on a status in `status` and a body containing `output`
-    /// (when set).
-    Http {
-        client: reqwest::Client,
-        url: String,
-        status: Vec<u16>,
-        output: Option<String>,
-    },
-}
-
-impl Probe {
-    /// A one-line description of the probe for the debug log.
-    fn describe(&self) -> String {
-        match self {
-            Probe::Shell { cmd, .. } => format!("polling readiness command: {cmd}"),
-            Probe::Http { url, .. } => format!("polling readiness endpoint: {url}"),
-        }
-    }
-
-    /// Runs the probe once, returning whether it passed.
-    async fn check(&self) -> bool {
-        match self {
-            Probe::Shell {
-                cmd,
-                exit_codes,
-                output,
-                env,
-            } => run_shell_check(cmd, exit_codes.as_ref(), output.as_deref(), env).await,
-            Probe::Http {
-                client,
-                url,
-                status,
-                output,
-            } => run_http_check(client, url, status, output.as_deref()).await,
-        }
-    }
-}
 
 impl Shared {
     /// Runs the readiness policy: poll a shell/http probe until it passes, watch
@@ -90,9 +36,8 @@ impl Shared {
             return;
         }
 
-        // A delay is a plain timer and an output watch waits on the pump; only the
-        // shell/http probes drive the polling loop. Their shared interval/timeout
-        // defaulting is applied once, after the probe is built.
+        // A delay is a plain timer and an output watch waits on the pump; only shell/http
+        // probes drive the polling loop (their interval/timeout defaulting applied below).
         let (probe, interval, timeout) = match readiness {
             Readiness::Delay(delay) => {
                 self.await_readiness_delay(&name, *delay, &mut running)
@@ -115,7 +60,7 @@ impl Shared {
                 Probe::Shell {
                     cmd: cmd.clone(),
                     exit_codes: exit_codes.clone(),
-                    output: output.clone(),
+                    output: output.clone().map(Needle::new),
                     env: proc.env().clone(),
                 },
                 *interval,
@@ -144,8 +89,8 @@ impl Shared {
                     Probe::Http {
                         client,
                         url: url.clone(),
-                        status: status.0.clone(),
-                        output: output.clone(),
+                        status: status.clone(),
+                        output: output.clone().map(Needle::new),
                     },
                     *interval,
                     *timeout,
@@ -352,93 +297,6 @@ impl Shared {
         self.system.error(reason);
         self.fail_run(name, 1);
     }
-}
-
-/// Runs one probe, returning true only if it passes AND the child it probed is
-/// still the live incarnation (not a since-exited or retried one).
-async fn run_one_check(running: &mut watch::Receiver<Option<u64>>, probe: &Probe) -> bool {
-    let incarnation = match running.wait_for(Option::is_some).await {
-        Ok(incarnation) => *incarnation,
-        Err(_) => return false,
-    };
-    probe.check().await && *running.borrow() == incarnation
-}
-
-/// Runs the command in the process's environment; passes if it finishes within
-/// [`READINESS_CHECK_TIMEOUT`] with an allowed exit code and matching stdout.
-async fn run_shell_check(
-    command: &str,
-    exit_codes: Option<&ExitCodes>,
-    output: Option<&str>,
-    env: &BTreeMap<String, String>,
-) -> bool {
-    let mut cmd = super::shell_command(command, env);
-    cmd.stdin(Stdio::null())
-        .stderr(Stdio::null())
-        // On drop (poller aborted or timed out), kill the `sh` rather than orphan it.
-        .kill_on_drop(true);
-    // Capture stdout only when an output substring must be inspected.
-    if output.is_some() {
-        cmd.stdout(Stdio::piped());
-    } else {
-        cmd.stdout(Stdio::null());
-    }
-
-    let Ok(child) = cmd.spawn() else {
-        return false;
-    };
-
-    // On timeout the future drops the child, and kill_on_drop reaps it.
-    let Ok(Ok(result)) = timeout(READINESS_CHECK_TIMEOUT, child.wait_with_output()).await else {
-        return false;
-    };
-
-    // An unset condition passes; when set, the exit code and stdout must both match.
-    let code_ok =
-        exit_codes.is_none_or(|codes| result.status.code().is_some_and(|c| codes.allows(c)));
-    let output_ok = output.is_none_or(|needle| stripped_contains(&result.stdout, needle));
-    code_ok && output_ok
-}
-
-/// Builds the shared client for HTTP probes, bounding each request by
-/// [`READINESS_CHECK_TIMEOUT`]. Redirects aren't followed, so `status` reflects
-/// the endpoint's own response rather than wherever it points.
-fn build_http_client() -> reqwest::Result<reqwest::Client> {
-    reqwest::Client::builder()
-        .timeout(READINESS_CHECK_TIMEOUT)
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-}
-
-/// GETs `url`; passes on a status in `status` and, when set, a body containing
-/// `output`. A request error (refused, DNS, TLS, timeout) counts as not ready.
-async fn run_http_check(
-    client: &reqwest::Client,
-    url: &str,
-    status: &[u16],
-    output: Option<&str>,
-) -> bool {
-    let Ok(response) = client.get(url).send().await else {
-        return false;
-    };
-    if !status.contains(&response.status().as_u16()) {
-        return false;
-    }
-    // The status matched; when an output substring is required, the body must contain it.
-    match output {
-        None => true,
-        Some(needle) => response
-            .bytes()
-            .await
-            .is_ok_and(|body| stripped_contains(&body, needle)),
-    }
-}
-
-/// Substring test against `bytes` with ANSI escapes stripped first, so a colored
-/// banner still matches a plain-text needle. Byte-based, matching the output watch.
-fn stripped_contains(bytes: &[u8], needle: &str) -> bool {
-    let stripped = anstream::adapter::strip_bytes(bytes).into_vec();
-    super::contains_bytes(&stripped, needle.as_bytes())
 }
 
 /// Resolves a configured interval/timeout: `d` when set and non-zero, else

@@ -82,14 +82,19 @@ pub fn write_config_named(name: &str, content: &str) -> (TempDir, PathBuf) {
     (dir, path)
 }
 
-/// Polls `buf` until `needle` appears or `timeout` elapses.
-pub async fn wait_for_output(buf: &SharedBuf, needle: &str, timeout: Duration) -> bool {
+/// Polls `predicate` until it holds or `timeout` elapses.
+pub async fn wait_until<F: Fn() -> bool>(predicate: F, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
-        if buf.contents().contains(needle) {
+        if predicate() {
             return true;
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    buf.contents().contains(needle)
+    predicate()
+}
+
+/// Polls `buf` until `needle` appears or `timeout` elapses.
+pub async fn wait_for_output(buf: &SharedBuf, needle: &str, timeout: Duration) -> bool {
+    wait_until(|| buf.contents().contains(needle), timeout).await
 }

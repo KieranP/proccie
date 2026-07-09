@@ -61,6 +61,7 @@ dot. The footer always shows the active key bindings.
 | `PgUp` `PgDn`  | Scroll one screen.                                             |
 | `Home` `End`   | Jump to the oldest / newest line (`End` resumes following).    |
 | `s`            | Open search on the active tab (see below).                     |
+| `r`            | Restart the active service and its dependents (service tabs).  |
 | `c`            | Close the active tab — only for a cleanly-completed process.   |
 | `Ctrl+C`       | Stop (see [Ctrl+C](#ctrlc) below); press again to force-kill.  |
 | `q`            | Stop everything and quit; press again to force-kill.           |

@@ -1,27 +1,14 @@
-use std::collections::BTreeMap;
+//! The readiness-check schema and its hand-written TOML deserialization: one
+//! mode per table (shell/http/output/delay), a single-or-list HTTP status, and a
+//! flexible integer/float/string duration.
+
 use std::time::Duration;
 
 use serde::Deserialize;
 use serde::de::{self, Deserializer, MapAccess, Visitor};
 
-/// Exit codes considered expected for a process; an empty set means any exit
-/// triggers shutdown. In TOML: an array of integers, e.g. `exit_codes = [0, 1]`.
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(transparent)]
-pub struct ExitCodes(pub Vec<i32>);
-
-impl ExitCodes {
-    /// Reports whether the given exit code is in the expected set. Returns
-    /// `false` if the set is empty (no exits are expected).
-    pub fn allows(&self, code: i32) -> bool {
-        self.0.contains(&code)
-    }
-
-    /// Reports whether any expected exit codes are configured.
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-}
+use super::process::ExitCodes;
+use crate::config::parse_duration;
 
 /// HTTP status codes counted as ready. In TOML: a single integer or a list,
 /// e.g. `status = 200` or `status = [200, 204]`. Defaults to `[200]` when unset.
@@ -29,7 +16,13 @@ impl ExitCodes {
 pub struct StatusCodes(pub Vec<u16>);
 
 impl StatusCodes {
-    /// Reports whether any expected status codes are configured.
+    /// Whether the given HTTP status code is in the expected set. Returns `false`
+    /// if the set is empty (no status is expected).
+    pub fn allows(&self, code: u16) -> bool {
+        self.0.contains(&code)
+    }
+
+    /// Whether the expected-status-code set is empty (none configured).
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
@@ -221,7 +214,7 @@ impl<'de> Deserialize<'de> for Readiness {
                         // interval/timeout are shared: they apply to whichever mode is chosen.
                         "interval" => interval = map.next_value::<DurationValue>()?.0,
                         "timeout" => timeout = map.next_value::<DurationValue>()?.0,
-                        // Zero is a valid immediate-ready delay, so keep it rather than dropping it.
+                        // Zero is a valid immediate-ready delay, so keep it rather than drop it.
                         "delay" => {
                             delay = Some(map.next_value::<DurationValue>()?.0.unwrap_or_default());
                         }
@@ -293,121 +286,4 @@ impl<'de> Deserialize<'de> for Readiness {
 
         deserializer.deserialize_map(ReadinessVisitor)
     }
-}
-
-/// When a process releases its dependents, carrying that policy's config so
-/// release sites match exhaustively instead of re-reading the raw fields.
-#[derive(Debug, Clone, Copy)]
-pub enum ReadyWhen<'a> {
-    /// The moment the process launches.
-    Launched,
-    /// When the process exits with an expected code.
-    ExpectedExit(&'a ExitCodes),
-    /// When the readiness check passes: its command succeeds or its delay elapses.
-    ReadinessPass(&'a Readiness),
-}
-
-impl ReadyWhen<'_> {
-    /// Describes the release moment for log output ("waiting for X to ...").
-    pub fn verb(self) -> &'static str {
-        match self {
-            ReadyWhen::Launched => "launch",
-            ReadyWhen::ExpectedExit(_) => "exit with expected code",
-            ReadyWhen::ReadinessPass(Readiness::Delay(_)) => "become ready after its delay",
-            ReadyWhen::ReadinessPass(_) => "pass readiness check",
-        }
-    }
-}
-
-/// A single process entry from the TOML config.
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Process {
-    /// Shell command to run (required). Executed via `sh -c`.
-    #[serde(default)]
-    pub command: String,
-
-    /// Exit codes considered expected; empty (default) means any exit triggers
-    /// shutdown. A code outside a non-empty list fails, 0 included. Excludes `readiness`.
-    #[serde(default)]
-    pub exit_codes: ExitCodes,
-
-    /// Readiness check; dependents wait until its shell/http probe passes, its
-    /// output appears, or its delay elapses. Mutually exclusive with `exit_codes`.
-    #[serde(default)]
-    pub readiness: Option<Readiness>,
-
-    /// Process names that must be ready before this one starts.
-    #[serde(default)]
-    pub depends_on: Vec<String>,
-
-    /// Additional environment variables for this process, merged on top of
-    /// the inherited environment.
-    #[serde(default)]
-    pub environment: BTreeMap<String, String>,
-
-    /// Optional file path; when set, all output is also written here without
-    /// ANSI color codes, in addition to the console.
-    #[serde(default)]
-    pub log_file: Option<String>,
-
-    /// Optional path to a dotenv-style file applied to this process.
-    #[serde(default)]
-    pub env_file: Option<String>,
-
-    /// Maximum number of times to restart this process after it exits with
-    /// an error code. A value of 0 (the default) means no retries.
-    #[serde(default)]
-    pub max_retries: i64,
-
-    /// Optional display name for the TUI tab and log prefix; the service key
-    /// stays the canonical identifier. Falls back to the key when unset.
-    #[serde(default)]
-    pub name: Option<String>,
-
-    /// Optional prefix/tab color: a named ANSI color (`red`, `bright-green`,
-    /// …) or `#rrggbb` hex. Validated at load, parsed on demand by [`color`](Self::color).
-    #[serde(default)]
-    pub(super) color: Option<String>,
-
-    /// The fully resolved environment, computed during
-    /// [`Config::load`](super::Config::load); not from TOML. Private to this module.
-    #[serde(skip)]
-    pub(super) env: BTreeMap<String, String>,
-}
-
-impl Process {
-    /// Returns the fully resolved environment.
-    pub fn env(&self) -> &BTreeMap<String, String> {
-        &self.env
-    }
-
-    /// Returns the configured display name, or `key` when unset. The key
-    /// remains the canonical identifier; this is purely cosmetic.
-    pub fn display_name<'a>(&'a self, key: &'a str) -> &'a str {
-        self.name.as_deref().unwrap_or(key)
-    }
-
-    /// Returns the configured prefix/tab color, if any (parsed; validated at load).
-    pub fn color(&self) -> Option<anstyle::Color> {
-        self.color.as_deref().and_then(crate::theme::parse_color)
-    }
-
-    /// Returns when this process releases its dependents; validation
-    /// guarantees `exit_codes` and `readiness` are mutually exclusive.
-    pub fn ready_when(&self) -> ReadyWhen<'_> {
-        if !self.exit_codes.is_empty() {
-            ReadyWhen::ExpectedExit(&self.exit_codes)
-        } else if let Some(readiness) = &self.readiness {
-            ReadyWhen::ReadinessPass(readiness)
-        } else {
-            ReadyWhen::Launched
-        }
-    }
-}
-
-/// Parses a humantime duration (`"10s"`, `"500ms"`); shared by the CLI
-/// duration flags and TOML duration values so both render errors the same way.
-pub fn parse_duration(s: &str) -> Result<Duration, String> {
-    humantime::parse_duration(s).map_err(|e| format!("invalid duration {s:?}: {e}"))
 }

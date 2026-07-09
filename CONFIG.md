@@ -94,10 +94,13 @@ Two keys are shared across modes and live at the readiness top level, not inside
 `delay` (which is its own timer); setting them there is a config error.
 
 In every mode, any `output` substring is matched against text with ANSI escape
-codes stripped, so a colored banner still matches a plain-text needle. Durations
+codes stripped, so a colored banner still matches a plain-text needle. The match
+is **smart-case** (like the log search): case-insensitive unless the needle
+contains an uppercase letter, and it needn't be on its own line. Durations
 are bare seconds (integer or float, e.g. `2` or `2.5`) or a string like
-`"500ms"` / `"1m 30s"`; zero falls back to the default and a negative value is an
-error. When a `timeout` elapses before the check passes, proccie treats it as a
+`"500ms"` / `"1m 30s"`; a negative value is an error. A zero `interval`/`timeout`
+falls back to its default, while a zero `delay` is kept (an immediate-ready
+check). When a `timeout` elapses before the check passes, proccie treats it as a
 startup failure: dependents don't start and everything shuts down non-zero.
 
 #### Shell
@@ -177,8 +180,8 @@ readiness.timeout = 60
 ```
 
 `readiness.output` is the substring the process's output must emit (with the
-shared top-level `timeout` bounding the wait). The match is case-sensitive and
-needn't be on its own line. Nothing is polled, so `interval` doesn't apply.
+shared top-level `timeout` bounding the wait). The match is smart-case (see
+above). Nothing is polled, so `interval` doesn't apply.
 
 #### Delay
 

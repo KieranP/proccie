@@ -113,11 +113,15 @@ fn append_status(spans: &mut Vec<Span<'static>>, app: &App) {
     }
 }
 
-/// The keybinding hints, with `c: close` appended on a closeable service tab.
+/// The keybinding hints, with `r: restart` on a service tab while the run is
+/// live, and `c: close` on a closeable one.
 fn footer_hints(app: &App) -> String {
     let mut hints =
         "Tab/⇧Tab: switch   ↑↓/PgUp/PgDn/Home/End: scroll   s: search   Ctrl+C: stop/quit   q: quit"
             .to_string();
+    if app.finished.is_none() && app.active_service().is_some() {
+        hints.push_str("   r: restart");
+    }
     if app.active_service().is_some_and(Service::is_closeable) {
         hints.push_str("   c: close");
     }
